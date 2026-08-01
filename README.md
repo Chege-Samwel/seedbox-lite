@@ -23,6 +23,34 @@ Stream Torrents Instantly
 
 SeedBox Lite is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
 
+## 🎟️ Streaming Suite (v2)
+
+A complete, invite-only personal cinema layered on top of the streaming engine:
+
+- **Ticket login system** — users sign in with ticket codes (`SB-XXXX-XXXX`) issued from the **admin panel** (`/admin`). Tickets can be **discontinued or renewed** at any time; sessions are validated on app boot and every request, so a revoked ticket kills access immediately. An owner ticket is generated on first boot and printed to the server console.
+- **Internet Archive catalog (legal)** — browse curated rows (classics, sci-fi, horror, silent era, cartoons, documentaries), search the full public-domain catalog, and stream directly with progressive HTTP playback — no torrent needed for archive content.
+- **Magnet pipeline (in-memory)** — users queue magnets for content **they have the rights to**; the server holds them in WebTorrent memory, auto-selects the primary video file, and **warms up the head of the file** so playback is "Ready" before you press play. Live badges: *Connecting → Warming up → Ready*, with buffered bytes, speed, peers.
+- **Picture library** — every pipeline item automatically gets posters/backdrops/overviews from keywords (title, year, SxxExx parsed from filenames) via TMDB (optional key) → TVMaze → iTunes → OMDb fallback chain. Manual re-lookup + alternate-poster picker included.
+- **TV tracking** — full shows with seasons/episodes (stills, airdates, synopses), watched/unwatched toggles per episode, and per-episode magnet attachment that feeds the pipeline.
+- **Watch history** — resume points saved every 5s per user, continue-watching shelves, watched shelf, per-entry and full clear.
+- **Per-user isolation** — every ticket gets its own library, history, and show-tracking workspace on the server.
+- **Cinematic UI** — hero banner, poster/banner carousels, Netflix-style details pages, subtitle menu on the player (archive subtitles via CORS-safe proxy with SRT→VTT conversion, plus local `.srt`/`.vtt` upload), buffering overlay, resume toast, double-tap fullscreen, mobile bottom tab bar.
+- **PWA ready** — installable manifest, icons, standalone display. The Android app is simply this web app wrapped in a WebView (Capacitor/TWA) — no rewrite planned or needed.
+
+### 🔌 New API surface
+
+| Area | Endpoints |
+| --- | --- |
+| Auth | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/validate` |
+| Admin (`x-admin-key`) | `GET/POST /api/admin/tickets` · `PATCH/DELETE /api/admin/tickets/:id` |
+| Catalog | `GET /api/browse/home` · `GET /api/browse/search?q=` · `GET /api/browse/item/:id` · `GET /api/browse/subtitle` |
+| Pictures/TV | `GET /api/metadata/search?q=` · `GET /api/metadata/show?name=&season=` |
+| Pipeline | `GET/POST /api/me/library` · `PATCH/DELETE /api/me/library/:id` · `POST /api/me/library/:id/artwork` |
+| History | `GET/POST /api/me/history` · `GET/DELETE /api/me/history/:key` · `DELETE /api/me/history` |
+| Tracking | `GET /api/me/shows` · `GET /api/me/shows/:key` · `POST /api/me/shows/watched` |
+
+> **Content policy:** this app does **not** include or support pirate index integrations. It ships with the fully legal Internet Archive catalog and a pipeline for magnets the user is licensed to access. All artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
+
 
 
 ### ✨ Key Highlights

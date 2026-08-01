@@ -108,8 +108,9 @@ app.use((req, res, next) => {
   res.on('finish', logResponseTime);
   res.on('close', logResponseTime);
   
-  // Set a global timeout for all API requests
-  res.setTimeout(10000, () => {
+  // Set a global timeout for all API requests (30s: metadata/catalog lookups
+  // may take a while when providers are slow or unreachable)
+  res.setTimeout(30000, () => {
     console.log(`⏱️ ⚠️ Global timeout reached for ${req.path}`);
     if (!res.headersSent) {
       res.status(503).send({ 
@@ -1124,38 +1125,22 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// ═══════════════════════════════════════════════════════════════
+// Feature modules: ticket auth + sessions, admin, Internet Archive
+// catalog, metadata/picture library, per-user pipeline & history.
+// Mounted BEFORE the legacy torrent routes so the session gate
+// inside also protects /api/torrents (disable with REQUIRE_AUTH=false).
+// ═══════════════════════════════════════════════════════════════
+app.locals.wt = {
+  client,
+  resolve: universalTorrentResolver,
+  load: loadTorrentFromId,
+};
+require('./routes/features')(app);
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Authentication endpoint
-app.post('/api/auth/login', (req, res) => {
-  const { password } = req.body;
-  const correctPassword = process.env.ACCESS_PASSWORD || 'seedbox123';
-  
-  console.log(`🔐 Login attempt with password: ${password ? '[PROVIDED]' : '[MISSING]'}`);
-  
-  if (!password) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Password is required' 
-    });
-  }
-  
-  if (password === correctPassword) {
-    console.log('✅ Authentication successful');
-    return res.json({ 
-      success: true, 
-      message: 'Authentication successful' 
-    });
-  } else {
-    console.log('❌ Authentication failed - incorrect password');
-    return res.status(401).json({ 
-      success: false, 
-      error: 'Invalid password' 
-    });
-  }
 });
 
 // UNIVERSAL ADD TORRENT - Always succeeds

@@ -1,138 +1,93 @@
-import { fetchWithTimeout, createBackoffFetcher } from '../utils/fetchWithTimeout';
-
-// Get the API base URL from environment variables
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
-
 /**
- * Get the list of all torrents
+ * Central API client — token-aware fetch helpers for every backend module.
  */
-export const getTorrents = async () => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents`, {}, 5000);
-    return await response.json();
-  } catch (error) {
-    console.error('Error fetching torrents:', error);
-    throw error;
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
+
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const TOKEN_KEY = 'sb_session_token';
+
+export const getToken = () => localStorage.getItem(TOKEN_KEY);
+export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+
+async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
+  const headers = {};
+  const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const res = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
+    timeoutMs
+  );
+  let data = null;
+  try { data = await res.json(); } catch { data = null; }
+  if (!res.ok) {
+    const err = new Error(data?.error || data?.message || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
-};
+  return data;
+}
 
-/**
- * Get detailed information about a specific torrent
- * @param {string} id - Torrent ID or info hash
- */
-export const getTorrentDetails = async (id) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents/${id}`, {}, 10000);
-    return await response.json();
-  } catch (error) {
-    console.error(`Error fetching details for torrent ${id}:`, error);
-    throw error;
-  }
-};
+// ---------- Auth ----------
+export const loginWithTicket = (ticketCode) =>
+  apiFetch('/api/auth/login', { method: 'POST', body: { ticketCode } });
+export const validateSession = () => apiFetch('/api/auth/validate', { timeoutMs: 10000 });
+export const logoutSession = () => apiFetch('/api/auth/logout', { method: 'POST', timeoutMs: 8000 }).catch(() => ({}));
 
-/**
- * Get statistics for a specific torrent
- * @param {string} id - Torrent ID or info hash
- */
-export const getTorrentStats = async (id) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents/${id}/stats`, {}, 5000);
-    return await response.json();
-  } catch (error) {
-    console.error(`Error fetching stats for torrent ${id}:`, error);
-    throw error;
-  }
-};
+// ---------- Admin ----------
+export const adminFetch = (path, adminKey, opts = {}) =>
+  apiFetch(path, { ...opts, timeoutMs: opts.timeoutMs || 15000 }).catch((e) => { throw e; });
 
-/**
- * Get files for a specific torrent
- * @param {string} id - Torrent ID or info hash
- */
-export const getTorrentFiles = async (id) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents/${id}/files`, {}, 8000);
-    return await response.json();
-  } catch (error) {
-    console.error(`Error fetching files for torrent ${id}:`, error);
-    throw error;
-  }
-};
+export async function adminApi(path, adminKey, { method = 'GET', body } = {}) {
+  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  }, 15000);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || data?.message || `Request failed (${res.status})`);
+  return data;
+}
 
-/**
- * Add a new torrent
- * @param {string} torrentId - Magnet URI or torrent info hash
- */
-export const addTorrent = async (torrentId) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ torrentId }),
-    }, 15000);
-    
-    return await response.json();
-  } catch (error) {
-    console.error('Error adding torrent:', error);
-    throw error;
-  }
-};
+// ---------- Browse (Internet Archive) ----------
+export const getHome = () => apiFetch('/api/browse/home', { timeoutMs: 25000 });
+export const searchArchive = (q, page = 1) =>
+  apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000 });
+export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000 });
+export const getSubtitleProxyUrl = (identifier, file) =>
+  `${API_BASE}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}`;
 
-/**
- * Delete a torrent
- * @param {string} id - Torrent ID or info hash
- */
-export const deleteTorrent = async (id) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents/${id}`, {
-      method: 'DELETE',
-    }, 10000);
-    
-    return await response.json();
-  } catch (error) {
-    console.error(`Error deleting torrent ${id}:`, error);
-    throw error;
-  }
-};
+// ---------- Metadata (picture library / TV structure) ----------
+export const searchMetadata = (q, type = 'any') =>
+  apiFetch(`/api/metadata/search?q=${encodeURIComponent(q)}&type=${type}`, { timeoutMs: 25000 });
+export const getShowData = (name, season = null) =>
+  apiFetch(`/api/metadata/show?name=${encodeURIComponent(name)}${season ? `&season=${season}` : ''}`, { timeoutMs: 25000 });
 
-/**
- * Get the URL for streaming a file from a torrent
- * @param {string} torrentId - Torrent ID or info hash
- * @param {number} fileIndex - File index
- */
-export const getStreamUrl = (torrentId, fileIndex) => {
-  return `${API_BASE_URL}/api/torrents/${torrentId}/files/${fileIndex}/stream`;
-};
+// ---------- Pipeline (user magnet library) ----------
+export const getLibrary = () => apiFetch('/api/me/library', { timeoutMs: 12000 });
+export const addToLibrary = (payload) => apiFetch('/api/me/library', { method: 'POST', body: payload, timeoutMs: 15000 });
+export const updateLibraryItem = (id, patch) => apiFetch(`/api/me/library/${id}`, { method: 'PATCH', body: patch });
+export const refreshArtwork = (id, body = {}) => apiFetch(`/api/me/library/${id}/artwork`, { method: 'POST', body, timeoutMs: 25000 });
+export const removeLibraryItem = (id) => apiFetch(`/api/me/library/${id}`, { method: 'DELETE' });
 
-/**
- * Get IMDB data for a torrent
- * @param {string} id - Torrent ID or info hash
- */
-export const getImdbData = async (id) => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/torrents/${id}/imdb`, {}, 10000);
-    return await response.json();
-  } catch (error) {
-    console.error(`Error fetching IMDB data for torrent ${id}:`, error);
-    throw error;
-  }
-};
+// ---------- History ----------
+export const getHistory = () => apiFetch('/api/me/history', { timeoutMs: 12000 });
+export const getHistoryEntry = (key) => apiFetch(`/api/me/history/${encodeURIComponent(key)}`, { timeoutMs: 8000 });
+export const saveHistory = (entry) => apiFetch('/api/me/history', { method: 'POST', body: entry });
+export const removeHistoryEntry = (key) => apiFetch(`/api/me/history/${encodeURIComponent(key)}`, { method: 'DELETE' });
+export const clearAllHistory = (keepInProgress = false) =>
+  apiFetch(`/api/me/history${keepInProgress ? '?keepInProgress=1' : ''}`, { method: 'DELETE' });
 
-/**
- * Check server health
- */
-export const checkServerHealth = async () => {
-  try {
-    const response = await fetchWithTimeout(`${API_BASE_URL}/api/system/health`, {}, 5000);
-    return await response.json();
-  } catch (error) {
-    console.error('Error checking server health:', error);
-    throw error;
-  }
-};
+// ---------- Show tracking ----------
+export const getTrackedShows = () => apiFetch('/api/me/shows', { timeoutMs: 12000 });
+export const getTrackedShow = (showKey) => apiFetch(`/api/me/shows/${encodeURIComponent(showKey)}`, { timeoutMs: 10000 });
+export const setEpisodeWatched = (payload) => apiFetch('/api/me/shows/watched', { method: 'POST', body: payload });
 
-// Create enhanced fetchers with retry logic
-export const getTorrentsWithRetry = createBackoffFetcher(getTorrents);
-export const getTorrentDetailsWithRetry = (id) => createBackoffFetcher(() => getTorrentDetails(id))();
-export const getTorrentStatsWithRetry = (id) => createBackoffFetcher(() => getTorrentStats(id))();
+// ---------- Torrent streams (legacy engine) ----------
+export const getTorrentDetails = (infoHash) => apiFetch(`/api/torrents/${infoHash}`, { timeoutMs: 10000 });
+export const getTorrentStreamUrl = (infoHash, fileIndex) =>
+  `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
+
+export const getHealth = () => apiFetch('/api/health', { timeoutMs: 5000 });
