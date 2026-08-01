@@ -269,6 +269,55 @@ module.exports = function mount(app) {
     res.json(data);
   });
 
+  // ============ PLAYER ↔ GOVERNOR HEARTBEAT ============
+  // The player reports the real playhead (seconds) + media duration so the
+  // window governor can size the -5m/+5m buffers precisely.
+  app.post('/api/streams/heartbeat', requireSession, (req, res) => {
+    const { infoHash, fileIdx = 0, position, duration } = req.body || {};
+    const governor = req.app.locals.governor;
+    if (!governor || !infoHash) return res.json({ ok: false });
+    governor.heartbeatByFile(String(infoHash).toLowerCase(), parseInt(fileIdx, 10) || 0, {
+      positionSecs: parseFloat(position) || 0,
+      durationSecs: parseFloat(duration) || 0,
+    });
+    res.json({ ok: true });
+  });
+
+  // ============ TORRENT-EMBEDDED SUBTITLES ============
+  // Streams .srt/.vtt files that live inside a torrent, converting SRT→VTT
+  // so the browser <track> element can render them.
+  app.get('/api/torrents/:identifier/files/:fileIdx/subtitle', requireSession, async (req, res) => {
+    const { resolve } = wt();
+    try {
+      const torrent = await resolve(req.params.identifier);
+      if (!torrent) return res.status(404).json({ error: 'Torrent not found' });
+      const file = torrent.files[parseInt(req.params.fileIdx, 10)];
+      if (!file) return res.status(404).json({ error: 'File not found' });
+      const ext = extOf(file.name);
+      if (!['.srt', '.vtt'].includes(ext)) {
+        return res.status(400).json({ error: 'Not a subtitle file' });
+      }
+      if (file.length > 5 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Subtitle file too large' });
+      }
+      file.select();
+      const chunks = [];
+      const stream = file.createReadStream();
+      stream.on('data', (c) => chunks.push(c));
+      stream.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        res.set('Content-Type', 'text/vtt; charset=utf-8');
+        res.send(ext === '.vtt' || text.includes('WEBVTT') ? text : srtToVtt(text));
+      });
+      stream.on('error', (err) => {
+        if (!res.headersSent) res.status(500).json({ error: err.message });
+      });
+      req.on('close', () => { try { stream.destroy(); } catch (_) {} });
+    } catch (err) {
+      if (!res.headersSent) res.status(500).json({ error: err.message });
+    }
+  });
+
   // ============ PER-USER: PIPELINE (magnet library) ============
 
   function findTorrent(infoHash) {

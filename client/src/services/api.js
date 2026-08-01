@@ -89,5 +89,15 @@ export const setEpisodeWatched = (payload) => apiFetch('/api/me/shows/watched', 
 export const getTorrentDetails = (infoHash) => apiFetch(`/api/torrents/${infoHash}`, { timeoutMs: 10000 });
 export const getTorrentStreamUrl = (infoHash, fileIndex) =>
   `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
+export const getTorrentSubtitleUrl = (infoHash, fileIndex) =>
+  `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}`;
+
+// ---------- Player heartbeat (drives the -5m/+5m buffer window) ----------
+export const sendStreamHeartbeat = (infoHash, fileIdx, position, duration) =>
+  apiFetch('/api/streams/heartbeat', {
+    method: 'POST',
+    body: { infoHash, fileIdx, position, duration },
+    timeoutMs: 6000,
+  }).catch(() => {}); // heartbeats are best-effort
 
 export const getHealth = () => apiFetch('/api/health', { timeoutMs: 5000 });

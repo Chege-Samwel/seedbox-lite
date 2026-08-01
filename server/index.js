@@ -167,6 +167,30 @@ const torrentNames = {};       // Torrent names by infoHash
 const hashToName = {};         // Quick hash-to-name lookup
 const nameToHash = {};         // Quick name-to-hash lookup
 
+// ═══════════════════════════════════════════════════════════════════
+// MEMORY GOVERNOR — sliding time-window buffer policy so the swarm can
+// never pull a whole multi-GB file into RAM (this caused OOM kills).
+// ═══════════════════════════════════════════════════════════════════
+const windowGovernor = require('./lib/windowGovernor');
+
+function destroyTorrentEverywhere(infoHash) {
+  try {
+    const torrent = client.torrents.find((t) => t.infoHash === infoHash);
+    const name = torrentNames[infoHash];
+    delete torrents[infoHash];
+    delete torrentIds[infoHash];
+    delete torrentNames[infoHash];
+    delete hashToName[infoHash];
+    if (name) delete nameToHash[name];
+    if (torrent) client.remove(torrent);
+  } catch (err) {
+    console.warn(`⚠️ Governor destroy failed for ${infoHash}: ${err.message}`);
+  }
+}
+
+const governor = windowGovernor.create(client, destroyTorrentEverywhere);
+app.locals.governor = governor;
+
 // IMDB Integration
 const imdbCache = new Map();
 
@@ -1799,8 +1823,12 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
     
     // Ensure torrent is active and file is selected with high priority
     torrent.resume();
-    file.select();
-    file.critical = true; // Mark as critical for higher priority
+    // GOVERNOR: register this stream and select ONLY a bounded window around
+    // the requested range — never file.select() the whole file into RAM.
+    const govStreamId = governor.registerStream(torrent.infoHash, parseInt(fileIdx, 10), file.length);
+    const reqRangeHeader = req.headers.range || '';
+    const reqStart = reqRangeHeader ? parseInt(reqRangeHeader.replace(/bytes=/, '').split('-')[0], 10) : 0;
+    governor.notePosition(govStreamId, isNaN(reqStart) ? 0 : reqStart);
     
     // Ensure we don't have too strict upload limits while streaming
     if (torrent.uploadLimit < 5000) {
@@ -1837,6 +1865,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       if (!streamEnded) {
         streamEnded = true;
         clearTimeout(streamTimeout);
+        governor.endStream(govStreamId); // governor keeps the region ~4 min, then drops it
         if (debugLevel) console.log(`✅ Stream ${streamRequestId} ended properly`);
       }
     };

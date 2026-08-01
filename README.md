@@ -36,6 +36,8 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 - **Per-user isolation** — every ticket gets its own library, history, and show-tracking workspace on the server.
 - **Cinematic UI** — hero banner, poster/banner carousels, Netflix-style details pages, subtitle menu on the player (archive subtitles via CORS-safe proxy with SRT→VTT conversion, plus local `.srt`/`.vtt` upload), buffering overlay, resume toast, double-tap fullscreen, mobile bottom tab bar.
 - **PWA ready** — installable manifest, icons, standalone display. The Android app is simply this web app wrapped in a WebView (Capacitor/TWA) — no rewrite planned or needed.
+- **Memory governor (anti-OOM)** — a sliding time-window buffer keeps ~**5 min behind / 5 min ahead** of the playhead (exact byte ranges computed from the file's real bitrate once duration is known). After a seek, the previous region is retained **~4 min**, then dropped. Idle torrents are auto-reaped, and a hard RSS cap sheds unstreamed torrents *before* the kernel can kill the process. Tunable via `WINDOW_BACK_MIN`, `WINDOW_AHEAD_MIN`, `LAST_REGION_KEEP_MIN`, `IDLE_TORRENT_TTL_MIN`, `MAX_RSS_MB`.
+- **Custom player controls** — hover-scrubber with time tooltip (and backdrop preview), buffered-amount bar, play/pause flash, volume, keyboard shortcuts (<kbd>space</kbd>/<kbd>←</kbd>/<kbd>→</kbd>/<kbd>f</kbd>/<kbd>m</kbd>), double-tap fullscreen, auto-hiding UI. Captions work from three sources: Internet Archive files, subtitles **embedded in the torrent** (auto-detected `.srt`/`.vtt`, converted server-side), and local upload — with S/M/L caption sizing.
 
 ### 🔌 New API surface
 
