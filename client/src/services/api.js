@@ -5,9 +5,52 @@ import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 const TOKEN_KEY = 'sb_session_token';
+const CONSENT_KEY = 'sb_consent'; // 'granted' | 'denied'
 
-export const getToken = () => localStorage.getItem(TOKEN_KEY);
-export const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
+/**
+ * Consent-aware storage:
+ *  - consent granted → localStorage (persistent: auto-login next visit)
+ *  - denied/unset   → sessionStorage (dies with the tab, nothing persisted)
+ */
+export const getConsent = () => localStorage.getItem(CONSENT_KEY);
+
+export const setConsent = (mode) => {
+  const token = getToken();
+  const user = localStorage.getItem('sb_user') || sessionStorage.getItem('sb_user');
+  if (mode === 'granted') {
+    localStorage.setItem(CONSENT_KEY, 'granted');
+    if (token) { localStorage.setItem(TOKEN_KEY, token); sessionStorage.removeItem(TOKEN_KEY); }
+    if (user) { localStorage.setItem('sb_user', user); sessionStorage.removeItem('sb_user'); }
+  } else {
+    localStorage.setItem(CONSENT_KEY, 'denied');
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem('sb_user');
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    if (user) sessionStorage.setItem('sb_user', user);
+  }
+};
+
+export const getToken = () =>
+  sessionStorage.getItem(TOKEN_KEY) || (getConsent() === 'granted' ? localStorage.getItem(TOKEN_KEY) : null);
+
+export const setToken = (t) => {
+  const store = getConsent() === 'granted' ? localStorage : sessionStorage;
+  // Always clear both to avoid split-brain states
+  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
+  if (t) store.setItem(TOKEN_KEY, t);
+};
+
+export const getCachedUser = () => {
+  const raw = sessionStorage.getItem('sb_user') || (getConsent() === 'granted' ? localStorage.getItem('sb_user') : null);
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+};
+
+export const setCachedUser = (u) => {
+  localStorage.removeItem('sb_user');
+  sessionStorage.removeItem('sb_user');
+  if (u) (getConsent() === 'granted' ? localStorage : sessionStorage).setItem('sb_user', JSON.stringify(u));
+};
 
 async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
   const headers = {};
@@ -79,6 +122,11 @@ export const saveHistory = (entry) => apiFetch('/api/me/history', { method: 'POS
 export const removeHistoryEntry = (key) => apiFetch(`/api/me/history/${encodeURIComponent(key)}`, { method: 'DELETE' });
 export const clearAllHistory = (keepInProgress = false) =>
   apiFetch(`/api/me/history${keepInProgress ? '?keepInProgress=1' : ''}`, { method: 'DELETE' });
+
+// ---------- Favorites ----------
+export const getFavorites = () => apiFetch('/api/me/favorites', { timeoutMs: 12000 });
+export const addFavorite = (entry) => apiFetch('/api/me/favorites', { method: 'POST', body: entry });
+export const removeFavorite = (key) => apiFetch(`/api/me/favorites/${encodeURIComponent(key)}`, { method: 'DELETE' });
 
 // ---------- Show tracking ----------
 export const getTrackedShows = () => apiFetch('/api/me/shows', { timeoutMs: 12000 });

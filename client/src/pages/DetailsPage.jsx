@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Play, Check, Link2, Download, Layers } from 'lucide-react';
+import { Play, Check, Link2, Download, Layers, Heart } from 'lucide-react';
 import { getArchiveItem, getShowData, getTrackedShow, setEpisodeWatched, addToLibrary } from '../services/api';
 import { Spinner, EmptyState, Modal, PosterImage } from '../components/ui';
 import { formatBytes } from '../utils/format';
 import { useToast } from '../hooks/useToast';
+import { useFavorites } from '../hooks/useFavorites';
 
 export function ArchiveDetails() {
   const { identifier } = useParams();
@@ -12,6 +13,8 @@ export function ArchiveDetails() {
   const [params] = useSearchParams();
   const [item, setItem] = useState(null);
   const [error, setError] = useState(null);
+  const { isFavorite, toggle } = useFavorites();
+  const toast = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +63,20 @@ export function ArchiveDetails() {
                 <Play size={18} fill="currentColor" /> Play now
               </button>
             )}
+            <button
+              className={`btn ${isFavorite(`archive:${item.id}`) ? 'btn-primary' : 'btn-ghost'}`}
+              onClick={async () => {
+                const added = await toggle({
+                  key: `archive:${item.id}`, title: item.title, kind: 'movie',
+                  poster: item.poster, backdrop: item.backdrop,
+                  ref: { type: 'archive', id: item.id },
+                });
+                toast(added ? 'Added to favorites' : 'Removed from favorites');
+              }}
+            >
+              <Heart size={16} fill={isFavorite(`archive:${item.id}`) ? 'currentColor' : 'none'} />
+              {isFavorite(`archive:${item.id}`) ? 'Favorited' : 'Favorite'}
+            </button>
             {item.subtitles?.length > 0 && <span className="chip green">💬 {item.subtitles.length} subtitle file{item.subtitles.length > 1 ? 's' : ''} available</span>}
           </div>
 
@@ -100,6 +117,7 @@ export function ShowDetails() {
   const [attach, setAttach] = useState(null); // { season, episode, epName }
   const [magnet, setMagnet] = useState('');
   const [attaching, setAttaching] = useState(false);
+  const { isFavorite: isFav, toggle: toggleFav } = useFavorites();
 
   const showKey = useMemo(() => show?.id || decoded, [show, decoded]);
 
@@ -179,7 +197,23 @@ export function ShowDetails() {
       <div className="details-body">
         <PosterImage src={show.poster} alt={show.title} className="details-poster" />
         <div className="details-main" style={{ marginTop: -60, position: 'relative' }}>
-          <h1>{show.title}</h1>
+          <h1 style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {show.title}
+            <button
+              className={`icon-btn ${isFav(`show:${showKey}`) ? 'on' : ''}`}
+              title="Favorite"
+              onClick={async () => {
+                const added = await toggleFav({
+                  key: `show:${showKey}`, title: show.title, kind: 'show',
+                  poster: show.poster, backdrop: show.backdrop,
+                  ref: { type: 'show', id: show.title },
+                });
+                toast(added ? 'Added to favorites' : 'Removed from favorites');
+              }}
+            >
+              <Heart fill={isFav(`show:${showKey}`) ? 'currentColor' : 'none'} />
+            </button>
+          </h1>
           <div className="meta-line">
             {show.year && <span className="chip green">{show.year}</span>}
             <span>TV Show</span>

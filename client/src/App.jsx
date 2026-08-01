@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, matchPat
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './hooks/useToast';
 import NavBar from './components/NavBar';
+import { ConsentBanner, LegalNotice } from './components/ConsentAndLegal';
 import LoginPage from './pages/LoginPage';
 import HomePage from './pages/HomePage';
 import SearchPage from './pages/SearchPage';
@@ -27,7 +28,12 @@ function Protected({ children }) {
   const location = useLocation();
   if (isLoading) return <Splash />;
   if (!isAuthenticated) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return children;
+  return (
+    <>
+      <LegalNotice />
+      {children}
+    </>
+  );
 }
 
 function Shell({ children }) {
@@ -68,6 +74,7 @@ export default function App() {
       <ToastProvider>
         <Router>
           <AppRoutes />
+          <ConsentBanner />
         </Router>
       </ToastProvider>
     </AuthProvider>

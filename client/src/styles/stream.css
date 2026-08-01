@@ -453,6 +453,34 @@ video::cue {
 .art-pick img { width: 100%; height: 100%; object-fit: cover; }
 .art-pick:hover { border-color: var(--accent); }
 
+/* ─── Consent banner & legal ─── */
+.consent-banner {
+  position: fixed; z-index: 130; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + 12px);
+  width: min(680px, calc(100vw - 24px));
+  background: rgba(17, 20, 28, 0.97); border: 1px solid #2a3242; border-radius: 16px;
+  padding: 16px 18px; box-shadow: var(--shadow);
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+  animation: slideup 0.35s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+@media (min-width: 900px) { .consent-banner { bottom: 20px; } }
+.consent-text { flex: 1 1 320px; display: flex; flex-direction: column; gap: 4px; }
+.consent-text strong { font-size: 13.5px; }
+.consent-text span { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+.consent-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.legal-text { max-height: 50vh; overflow: auto; padding-right: 6px; }
+.legal-text p { font-size: 13.5px; color: var(--text-dim); line-height: 1.6; margin: 0 0 12px; }
+.legal-text strong { color: var(--text); }
+
+/* Smoother player hover: tip fades/slides instead of popping */
+.scrub-tip {
+  transition: opacity 0.12s ease, transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+  will-change: transform, opacity;
+}
+.controls-row { transition: opacity 0.25s; }
+.player-controls { transition: opacity 0.25s, transform 0.25s; }
+.player-controls.hidden { opacity: 0; transform: translateY(8px); }
+
 /* Toast */
 .toast {
   position: fixed; bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + 16px); left: 50%;

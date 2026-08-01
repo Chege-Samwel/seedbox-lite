@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ArrowLeft, MessageSquare, Upload, Maximize, Minimize,
-  Play, Pause, Volume2, VolumeX,
+  Play, Pause, Volume2, VolumeX, PictureInPicture2,
 } from 'lucide-react';
 import {
   getArchiveItem, getSubtitleProxyUrl, getTorrentStreamUrl, getTorrentDetails,
@@ -39,6 +39,8 @@ export default function PlayerPage() {
   const hideTimer = useRef(null);
   const lastTap = useRef(0);
   const dragging = useRef(false);
+  const scrubRaf = useRef(null);
+  const lastTimePush = useRef(0);
 
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState(null);
@@ -212,6 +214,24 @@ export default function PlayerPage() {
     setTimeout(() => setFlash(null), 500);
   }, []);
 
+  const togglePip = useCallback(async () => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled && v.requestPictureInPicture) {
+        await v.requestPictureInPicture();
+      } else if (v.webkitSupportsPresentationMode && v.webkitSupportsPresentationMode('picture-in-picture')) {
+        v.webkitSetPresentationMode(
+          v.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture'
+        );
+      } else {
+        toast('Picture-in-picture not supported on this browser', 'error');
+      }
+    } catch { toast('Could not toggle picture-in-picture', 'error'); }
+  }, [toast]);
+
   const toggleFullscreen = useCallback(() => {
     const el = videoRef.current;
     if (!el) return;
@@ -242,16 +262,24 @@ export default function PlayerPage() {
     return () => hideTimer.current && clearTimeout(hideTimer.current);
   }, [pokeUi]);
 
-  // Scrubber events
+  // Scrubber events — rAF-throttled so hover feels silk-smooth even at
+  // 120Hz pointer rates
   const fracFromEvent = (clientX) => {
     const rect = scrubRef.current.getBoundingClientRect();
     return Math.max(0, Math.min((clientX - rect.left) / rect.width, 1));
   };
+  const pendingFrac = useRef(null);
   const onScrubMove = (e) => {
     if (!scrubRef.current || !duration) return;
-    const frac = fracFromEvent(e.clientX ?? e.touches?.[0]?.clientX);
-    setHoverScrub({ frac, secs: frac * duration });
-    if (dragging.current) seekTo(frac);
+    pendingFrac.current = fracFromEvent(e.clientX ?? e.touches?.[0]?.clientX);
+    if (scrubRaf.current) return;
+    scrubRaf.current = requestAnimationFrame(() => {
+      scrubRaf.current = null;
+      const frac = pendingFrac.current;
+      if (frac == null) return;
+      setHoverScrub({ frac, secs: frac * duration });
+      if (dragging.current) seekTo(frac);
+    });
   };
   const onScrubDown = (e) => {
     dragging.current = true;
@@ -350,7 +378,11 @@ export default function PlayerPage() {
             onTimeUpdate={() => {
               const v = videoRef.current;
               if (!v) return;
-              setCurTime(v.currentTime);
+              const now = performance.now();
+              if (now - lastTimePush.current > 500 || Math.abs(v.currentTime - curTime) > 1) {
+                lastTimePush.current = now;
+                setCurTime(v.currentTime);
+              }
               try {
                 if (v.buffered.length) setBufferedEnd(v.buffered.end(v.buffered.length - 1));
               } catch { /* ignore */ }
@@ -474,6 +506,9 @@ export default function PlayerPage() {
               <span style={{ flex: 1 }} />
               <button className={`icon-btn ctrl ${subMenu ? 'on' : ''}`} onClick={() => { setSubMenu((s) => !s); pokeUi(); }} title="Captions">
                 <MessageSquare />
+              </button>
+              <button className="icon-btn ctrl" onClick={togglePip} title="Picture in picture">
+                <PictureInPicture2 />
               </button>
               <button className="icon-btn ctrl" onClick={toggleFullscreen} title="Fullscreen">
                 {fs ? <Minimize /> : <Maximize />}

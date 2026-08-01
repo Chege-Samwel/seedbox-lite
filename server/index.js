@@ -5,6 +5,7 @@ const cors = require('cors');
 const path = require('path');
 const WebTorrent = require('webtorrent');
 const multer = require('multer');
+const { RollingDiskChunkStore, stats: storeStats } = require('./lib/rollingStore');
 
 // Environment Configuration with production optimizations
 const config = {
@@ -660,7 +661,11 @@ const loadTorrentFromId = (torrentId) => {
         private: false,
         strategy: 'rarest', // Download rarest pieces first for faster startup
         maxWebConns: 30,    // More web seed connections
-        path: './downloads' // Ensure consistent download location
+        path: './downloads', // Ensure consistent download location
+        // ROLLING DISK STORE: pieces live on disk in a capped rolling window,
+        // RAM holds only in-flight buffers. Trailing minutes are auto-evicted.
+        store: RollingDiskChunkStore,
+        storeCacheSlots: 4 // small read-through cache; the cap lives in our store
       };
       torrent = client.add(magnetUri, torrentOptions);
     } catch (addError) {
@@ -1292,7 +1297,9 @@ app.post('/api/torrents/upload', upload.single('torrentFile'), async (req, res) 
           ],
           private: false,
           strategy: 'rarest', // Download rarest pieces first for faster startup
-          maxWebConns: 20     // More web seed connections
+          maxWebConns: 20,    // More web seed connections
+          store: RollingDiskChunkStore,
+          storeCacheSlots: 4
         };
         loadedTorrent = client.add(torrentBuffer, torrentOptions);
         

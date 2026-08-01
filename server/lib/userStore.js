@@ -11,7 +11,7 @@ function keyFor(ticketId) {
 }
 
 function blank() {
-  return { library: [], history: [], shows: {} };
+  return { library: [], history: [], shows: {}, favorites: [] };
 }
 
 function getUser(ticketId) {
@@ -19,6 +19,7 @@ function getUser(ticketId) {
   if (!data.library) data.library = [];
   if (!data.history) data.history = [];
   if (!data.shows) data.shows = {};
+  if (!data.favorites) data.favorites = [];
   return data;
 }
 
@@ -98,6 +99,37 @@ function clearHistory(ticketId, keepInProgress = false) {
   return true;
 }
 
+// ---------- Favorites ----------
+
+function addFavorite(ticketId, entry) {
+  const data = getUser(ticketId);
+  if (!data.favorites.find((f) => f.key === entry.key)) {
+    data.favorites.unshift({
+      key: String(entry.key).slice(0, 200),
+      title: String(entry.title || 'Untitled').slice(0, 200),
+      poster: entry.poster || null,
+      backdrop: entry.backdrop || null,
+      kind: entry.kind || 'other',
+      ref: entry.ref || null, // { type:'archive'|'show'|'library', id }
+      addedAt: Date.now(),
+    });
+    if (data.favorites.length > 300) data.favorites = data.favorites.slice(0, 300);
+    saveUser(ticketId, data);
+  }
+  return data.favorites;
+}
+
+function removeFavorite(ticketId, key) {
+  const data = getUser(ticketId);
+  data.favorites = data.favorites.filter((f) => f.key !== key);
+  saveUser(ticketId, data);
+  return data.favorites;
+}
+
+function getFavorites(ticketId) {
+  return getUser(ticketId).favorites;
+}
+
 // ---------- Show tracking ----------
 
 function setEpisodeWatched(ticketId, { showKey, showTitle, poster, season, episode, watched }) {
@@ -126,4 +158,7 @@ module.exports = {
   removeHistory,
   clearHistory,
   setEpisodeWatched,
+  addFavorite,
+  removeFavorite,
+  getFavorites,
 };

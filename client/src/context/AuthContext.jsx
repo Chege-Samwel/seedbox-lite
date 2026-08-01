@@ -4,7 +4,7 @@
  * user lands on the ticket login screen with a precise reason.
  */
 import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
-import { getToken, setToken, loginWithTicket, validateSession, logoutSession } from '../services/api';
+import { getToken, setToken, setCachedUser, getCachedUser, loginWithTicket, validateSession, logoutSession } from '../services/api';
 
 const AuthContext = createContext();
 
@@ -26,7 +26,7 @@ export const AuthProvider = ({ children }) => {
 
   const clearAuth = useCallback((message = null) => {
     setToken(null);
-    localStorage.removeItem('sb_user');
+    setCachedUser(null);
     setUser(null);
     if (message) setAuthError(message);
   }, []);
@@ -40,7 +40,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const data = await validateSession();
       setUser(data.user);
-      localStorage.setItem('sb_user', JSON.stringify(data.user));
+      setCachedUser(data.user);
       setAuthError(null);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
@@ -48,10 +48,8 @@ export const AuthProvider = ({ children }) => {
       } else {
         // Server unreachable — keep the session alive using the cached profile;
         // every API call still enforces auth once the server is back.
-        const cached = localStorage.getItem('sb_user');
-        if (cached) {
-          try { setUser((u) => u || JSON.parse(cached)); } catch { /* ignore */ }
-        }
+        const cached = getCachedUser();
+        if (cached) setUser((u) => u || cached);
       }
     } finally {
       setIsLoading(false);

@@ -326,16 +326,41 @@ module.exports = function mount(app) {
     return client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === infoHash.toLowerCase()) || null;
   }
 
+  const rehydrating = new Set();
+
   app.get('/api/me/profile', requireSession, (req, res) => {
     res.json({ user: req.user });
   });
 
   app.get('/api/me/library', requireSession, (req, res) => {
     const data = userStore.getUser(req.user.id);
-    const items = data.library.map((item) => ({
-      ...item,
-      live: liveState(findTorrent(item.infoHash), item.fileIndex ?? null),
-    }));
+    const { load, client } = wt();
+    const items = data.library.map((item) => {
+      const torrent = findTorrent(item.infoHash);
+      // Rehydrate: a server restart empties the engine, so lazily re-load
+      // each remembered magnet in the background (once) when the user opens
+      // the pipeline again — history is never lost.
+      if (!torrent && load && client && !rehydrating.has(item.infoHash)) {
+        rehydrating.add(item.infoHash);
+        load(item.magnet)
+          .then((t) => {
+            if (!t) return;
+            const live = liveState(t);
+            userStore.updateLibraryItem(req.user.id, item.id, {
+              fileIndex: item.fileIndex ?? live.fileIndex ?? undefined,
+              fileName: item.fileName ?? live.fileName ?? undefined,
+            });
+            startWarmup(t, item.fileIndex ?? live.fileIndex ?? null);
+          })
+          .catch((err) => {
+            if (!/duplicate/i.test(err.message || '')) {
+              console.warn(`⚠️ Rehydrate failed for ${item.infoHash}: ${err.message}`);
+            }
+          })
+          .finally(() => setTimeout(() => rehydrating.delete(item.infoHash), 5000));
+      }
+      return { ...item, live: liveState(torrent, item.fileIndex ?? null) };
+    });
     res.json({ items });
   });
 
@@ -536,6 +561,24 @@ module.exports = function mount(app) {
   app.delete('/api/me/history', requireSession, (req, res) => {
     userStore.clearHistory(req.user.id, req.query.keepInProgress === '1');
     res.json({ ok: true });
+  });
+
+  // ============ PER-USER: FAVORITES ============
+
+  app.get('/api/me/favorites', requireSession, (req, res) => {
+    res.json({ favorites: userStore.getFavorites(req.user.id) });
+  });
+
+  app.post('/api/me/favorites', requireSession, (req, res) => {
+    const { key, title, poster, backdrop, kind, ref } = req.body || {};
+    if (!key || !title) return res.status(400).json({ error: 'key and title are required' });
+    const favorites = userStore.addFavorite(req.user.id, { key, title, poster, backdrop, kind, ref });
+    res.json({ ok: true, favorites });
+  });
+
+  app.delete('/api/me/favorites/:key', requireSession, (req, res) => {
+    const favorites = userStore.removeFavorite(req.user.id, decodeURIComponent(req.params.key));
+    res.json({ ok: true, favorites });
   });
 
   // ============ PER-USER: SHOW TRACKING ============

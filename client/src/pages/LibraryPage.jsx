@@ -1,10 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, Trash2, Image, ClipboardPaste, Pencil } from 'lucide-react';
+import { Play, Trash2, Image, ClipboardPaste, Pencil, Heart } from 'lucide-react';
 import { getLibrary, addToLibrary, removeLibraryItem, updateLibraryItem, refreshArtwork } from '../services/api';
 import { ReadyBadge, EmptyState, Modal, Spinner, PosterImage } from '../components/ui';
 import { formatBytes, formatSpeed } from '../utils/format';
 import { useToast } from '../hooks/useToast';
+import { useFavorites } from '../hooks/useFavorites';
 
 const POLL_MS = 3500;
 
@@ -17,6 +18,7 @@ export default function LibraryPage() {
   const [artPick, setArtPick] = useState(null); // { item, alternatives }
   const [editing, setEditing] = useState(null); // item being edited
   const mounted = useRef(true);
+  const { isFavorite, toggle } = useFavorites();
 
   const refresh = useCallback(async (silent = false) => {
     try {
@@ -207,6 +209,20 @@ export default function LibraryPage() {
               <div className="lib-actions">
                 <button className="icon-btn" title={`${canPlay ? 'Play' : 'Waiting for file info'}`} disabled={!canPlay} onClick={() => playItem(item)}>
                   <Play />
+                </button>
+                <button
+                  className={`icon-btn ${isFavorite(`lib:${item.id}`) ? 'on' : ''}`}
+                  title="Favorite"
+                  onClick={async () => {
+                    const added = await toggle({
+                      key: `lib:${item.id}`, title: item.title, kind: item.kind,
+                      poster: item.poster, backdrop: item.backdrop,
+                      ref: { type: 'library', id: item.id },
+                    });
+                    toast(added ? 'Added to favorites' : 'Removed from favorites');
+                  }}
+                >
+                  <Heart fill={isFavorite(`lib:${item.id}`) ? 'currentColor' : 'none'} />
                 </button>
                 <button className="icon-btn" title="Re-fetch artwork by keywords" onClick={() => doArtRefresh(item)}>
                   <Image />

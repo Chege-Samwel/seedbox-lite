@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, Info } from 'lucide-react';
 import { getHome, getHistory, getLibrary } from '../services/api';
+import { useFavorites } from '../hooks/useFavorites';
 import { Row, MediaCard, ReadyBadge, Spinner, EmptyState } from '../components/ui';
 
 export default function HomePage() {
@@ -10,6 +11,7 @@ export default function HomePage() {
   const [history, setHistory] = useState([]);
   const [library, setLibrary] = useState([]);
   const [loading, setLoading] = useState(true);
+  const { favorites } = useFavorites();
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +84,22 @@ export default function HomePage() {
               onClick={() => {
                 if (h.source.type === 'archive') navigate(`/watch/${encodeURIComponent(`archive:${h.source.identifier}:${h.source.fileIndex ?? 0}`)}`);
                 else navigate(`/watch/${encodeURIComponent(`torrent:${h.source.infoHash}:${h.source.fileIndex}`)}`);
+              }}
+            />
+          ))}
+        </Row>
+
+        <Row title="Favorites" hint="Hand-picked by you">
+          {favorites.map((f) => (
+            <MediaCard
+              key={f.key}
+              title={f.title}
+              subtitle={f.kind}
+              poster={f.poster}
+              onClick={() => {
+                if (f.ref?.type === 'archive') navigate(`/title/archive/${f.ref.id}`);
+                else if (f.ref?.type === 'show') navigate(`/title/show/${encodeURIComponent(f.ref.id)}`);
+                else navigate('/library');
               }}
             />
           ))}

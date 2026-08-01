@@ -24,6 +24,17 @@ const IDLE_TTL_MS = (parseFloat(process.env.IDLE_TORRENT_TTL_MIN || '10') * 60 *
 const MAX_RSS_MB = parseFloat(process.env.MAX_RSS_MB || '1400');
 const JANITOR_EVERY_MS = 10000;
 
+// Rolling disk store: some of the window bytes live on disk (capped) instead
+// of RAM — this is the "download a minute extra, delete the trailing minute"
+// machinery.
+let findRolling = null;
+let storeStats = null;
+try {
+  const rs = require('./rollingStore');
+  findRolling = rs.findRolling;
+  storeStats = rs.stats;
+} catch (_) { /* store is optional */ }
+
 // Byte fallbacks until duration is known (≈5 min at ~2.2 MB/s cap)
 const FALLBACK_BACK_BYTES = 16 * 1024 * 1024;
 const FALLBACK_AHEAD_BYTES = 64 * 1024 * 1024;
@@ -183,6 +194,13 @@ function create(client, destroyTorrent) {
       try { torrent.select(r.s, r.e, 1); } catch (_) {}
     }
     selected.set(key, nextRanges);
+
+    // Tell the rolling disk store which pieces are protected and its byte
+    // budget (≈ the window ± margins), so it auto-evicts trailing chunks.
+    if (findRolling) {
+      const rs = findRolling(torrent);
+      if (rs) rs.setProtectedWindow(startPiece, endPiece, Math.round((back + ahead) * 1.3));
+    }
   }
 
   function janitor() {
@@ -217,8 +235,21 @@ function create(client, destroyTorrent) {
       }
     }
 
-    // 3) Hard RSS guard — never let the kernel do it for us
+    // 3) Hard guards — never let the kernel do it for us
     const rssMB = process.memoryUsage().rss / 1048576;
+    const disk = storeStats ? storeStats() : null;
+    if (disk && disk.rootBytes > disk.diskCapBytes) {
+      console.warn(`🚨 Governor: disk store ${(disk.rootBytes / 1048576).toFixed(0)}MB exceeded cap ${(disk.diskCapBytes / 1048576).toFixed(0)}MB`);
+      const candidates = [...client.torrents]
+        .filter((t) => (liveByTorrent.get(t.infoHash) || 0) === 0)
+        .sort((a, b) => latestTouch(a.infoHash) - latestTouch(b.infoHash));
+      const victim = candidates[0];
+      if (victim) {
+        console.warn(`🚨 Governor: shedding "${victim.name || victim.infoHash}" to reclaim disk`);
+        releaseWindows(victim.infoHash);
+        destroyTorrent(victim.infoHash);
+      }
+    }
     if (rssMB > MAX_RSS_MB) {
       // Shed the least-recently-touched torrent that has no live streams
       const candidates = [...client.torrents]
