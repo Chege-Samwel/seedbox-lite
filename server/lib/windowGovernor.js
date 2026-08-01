@@ -153,22 +153,23 @@ function create(client, destroyTorrent) {
     // Expire old retained regions
     const kept = prev.filter((r) => r.expiresAt == null || r.expiresAt > now);
 
-    // If the previous active window is disconnected from the new one (a real
-    // seek), retain it for LAST_REGION_KEEP_MIN; if they overlap, merge.
+    // The active window SLIDES with the playhead: never union-merge, or the
+    // selection stretches unbounded during normal playback and the swarm
+    // wastes bandwidth re-keeping old minutes instead of fetching ahead.
     const activeIdx = kept.findIndex((r) => r.expiresAt == null);
+    const others = kept.filter((_, i) => i !== activeIdx); // retained leftovers
     const active = { s: startPiece, e: endPiece, expiresAt: null };
-    let nextRanges = [active];
+    let nextRanges = [active, ...others];
+
     if (activeIdx >= 0) {
       const oldActive = kept[activeIdx];
-      const overlaps = oldActive.e >= startPiece - 2 && oldActive.s <= endPiece + 2;
-      if (overlaps) {
-        nextRanges = [{ s: Math.min(oldActive.s, startPiece), e: Math.max(oldActive.e, endPiece), expiresAt: null }];
-      } else {
-        kept[activeIdx] = { ...oldActive, expiresAt: now + KEEP_MIN * 60 * 1000 };
-        nextRanges = [active, ...kept];
+      const disconnected = oldActive.e < startPiece - 2 || oldActive.s > endPiece + 2;
+      if (disconnected) {
+        // A real seek: keep the old region for LAST_REGION_KEEP_MIN, then drop
+        nextRanges.push({ ...oldActive, expiresAt: now + KEEP_MIN * 60 * 1000 });
       }
-    } else {
-      nextRanges = [active, ...kept];
+      // Otherwise the old window is fully superseded — deselect everything
+      // outside the new window below (this is the sliding behavior).
     }
 
     // Deselect pieces that are no longer covered by any active/retained range

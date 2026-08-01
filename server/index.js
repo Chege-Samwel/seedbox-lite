@@ -109,7 +109,13 @@ app.use((req, res, next) => {
   res.on('close', logResponseTime);
   
   // Set a global timeout for all API requests (30s: metadata/catalog lookups
-  // may take a while when providers are slow or unreachable)
+  // may take a while when providers are slow or unreachable).
+  // EXEMPT video streams/downloads: a fresh seek into an unbuffered region
+  // legitimately takes longer on a slow swarm, and the stream handler has
+  // its own 60s timeout.
+  const isStreamRoute = /\/api\/torrents\/[^/]+\/files\/[^/]+\/(stream|download)/.test(req.path);
+  if (isStreamRoute) return next();
+
   res.setTimeout(30000, () => {
     console.log(`⏱️ ⚠️ Global timeout reached for ${req.path}`);
     if (!res.headersSent) {
@@ -1880,11 +1886,11 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       
       // For seek operations, use a fixed chunk size to ensure reliable streaming
       if (start > 0 && !end) {
-        const MAX_CHUNK_SIZE = 8 * 1024 * 1024; // 8MB chunks for seeks
+        const MAX_CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks for seeks (fast first-byte)
         end = Math.min(start + MAX_CHUNK_SIZE, file.length - 1);
       } else if (!end) {
         // Initial request - use a generous initial chunk
-        const INITIAL_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB initial chunk
+        const INITIAL_CHUNK_SIZE = 3 * 1024 * 1024; // 3MB initial chunk
         end = Math.min(start + INITIAL_CHUNK_SIZE, file.length - 1);
       }
       
@@ -1898,24 +1904,26 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       // More aggressive prioritization for seek operations
       if (start > 0) {
         const pieceLength = torrent.pieceLength || 16384;
-        const startPiece = Math.floor(start / pieceLength);
-        const endPiece = Math.ceil(end / pieceLength);
+        const baseOffset = file.offset || 0;
+        // Clamp to the last piece OF THIS FILE — the old math ignored the
+        // file offset and produced `invalid selection` at end-of-file.
+        const lastPiece = Math.floor((baseOffset + file.length - 1) / pieceLength);
+        const startPiece = Math.min(Math.floor((baseOffset + start) / pieceLength), lastPiece);
+        const PRIORITY_WINDOW = 12; // focused urgent window (governor owns the big one)
+        const winEnd = Math.min(startPiece + PRIORITY_WINDOW, lastPiece);
         
-        // Prime a larger window for smoother playback
-        const PRIORITY_WINDOW = Math.min(30, Math.ceil((endPiece - startPiece) * 1.5));
-        
-        if (debugLevel) console.log(`🔄 [${streamRequestId}] Prioritizing pieces ${startPiece} to ${startPiece + PRIORITY_WINDOW}`);
+        if (debugLevel) console.log(`🔄 [${streamRequestId}] Prioritizing pieces ${startPiece} to ${winEnd}`);
         
         // More robust piece selection
         try {
           // First try WebTorrent's selection mechanism
           if (file._torrent && typeof file._torrent.select === 'function') {
-            file._torrent.select(startPiece, startPiece + PRIORITY_WINDOW, 1);
+            file._torrent.select(startPiece, winEnd, 1);
           }
           
           // Additionally, also mark critical pieces for extra priority
           if (file._torrent && file._torrent.critical) {
-            for (let i = startPiece; i < startPiece + 10; i++) {
+            for (let i = startPiece; i <= Math.min(startPiece + 6, winEnd); i++) {
               file._torrent.critical(i);
             }
           }
