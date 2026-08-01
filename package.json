@@ -3,12 +3,15 @@
   "version": "1.0.0",
   "description": "A lightweight torrent streaming application",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "dev": "concurrently -n server,client -c green,cyan \"npm run server\" \"npm run client\"",
     "server": "cd server && node index.js",
     "client": "cd client && npm run dev",
     "install-all": "npm install && cd server && npm install && cd ../client && npm install"
   },
   "keywords": ["torrent", "streaming", "webtorrent"],
   "author": "",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
 }
