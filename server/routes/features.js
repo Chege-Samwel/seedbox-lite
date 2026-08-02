@@ -397,6 +397,8 @@ module.exports = function mount(app) {
     const idx = fileIdx != null ? parseInt(fileIdx, 10) : orchestrator.primaryVideoIndex(torrent);
     const { bytePos, targetBytes } = resolveWarmPosition(torrent, idx, warmupPayload(req));
     const state = orchestrator.start({ infoHash: hash, fileIdx: idx, bytePos, targetBytes });
+    const guard = req.app.locals.swarmGuard?.state(hash);
+    if (guard?.poisoned) state.poisoned = true;
     res.json(state);
   });
 
@@ -410,7 +412,10 @@ module.exports = function mount(app) {
     const torrent = findTorrentLocal(hash);
     const idx = req.query.fileIdx != null ? parseInt(req.query.fileIdx, 10) : (torrent && torrent.ready ? orchestrator.primaryVideoIndex(torrent) : null);
     const { bytePos, targetBytes } = torrent ? resolveWarmPosition(torrent, idx, req.query) : { bytePos: 0, targetBytes: 0 };
-    res.json(orchestrator.status({ infoHash: hash, fileIdx: idx, bytePos, targetBytes }));
+    const state = orchestrator.status({ infoHash: hash, fileIdx: idx, bytePos, targetBytes });
+    const guard = req.app.locals.swarmGuard?.state(hash);
+    if (guard?.poisoned) state.poisoned = true;
+    res.json(state);
   });
 
   // ============ TORRENT-EMBEDDED SUBTITLES ============

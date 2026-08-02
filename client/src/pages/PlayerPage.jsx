@@ -84,6 +84,8 @@ export default function PlayerPage() {
   const [connNote, setConnNote] = useState(null); // auto-reconnect status line for overlays
   const phaseRef = useRef(phase);
   useEffect(() => { phaseRef.current = phase; }, [phase]);
+  const warmRef = useRef(null); // latest warmup payload, for timers/errors
+  const setWarmBoth = (st) => { warmRef.current = st; setWarm(st); };
 
   // Quality / transcode (torrent sources only)
   const [tcMenu, setTcMenu] = useState(false);
@@ -174,7 +176,7 @@ export default function PlayerPage() {
       windowSecs: 60,
     }).then((st) => {
       if (st?.fileIndex != null) fileIdxRef.current = st.fileIndex;
-      setWarm(st);
+      setWarmBoth(st);
     }).catch(() => { /* status polling path reports real failures */ });
   }, [type, identifier]);
 
@@ -198,6 +200,13 @@ export default function PlayerPage() {
    *  A timeout/503/dropped socket must never leave a dead player behind. */
   const scheduleReconnect = useCallback((why) => {
     if (type !== 'torrent') return;
+    // The swarm guard convicted this source of feeding corrupt data:
+    // reattaching is futile — go straight to the gate which spells it out.
+    if (warmRef.current?.poisoned) {
+      reconnects.current = 0;
+      retryWarmup();
+      return;
+    }
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; }
     const n = reconnects.current + 1;
@@ -250,7 +259,7 @@ export default function PlayerPage() {
         } else {
           st.fileIndex = fileIndex;
         }
-        setWarm(st);
+        setWarmBoth(st);
         if (st.state === 'ready') {
           resumeTarget.current = startPos || 0; // applied on first canplay
           playableRef.current = st.containerPlayable !== false;
@@ -267,13 +276,15 @@ export default function PlayerPage() {
           }
           return; // video 'canplay' event calls applyReady
         }
-        if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS) {
-          setWarmError(st?.stalled
-            ? 'This swarm is not sending data (it may be dead or a fake). You can keep waiting or go back and pick another source.'
-            : 'Taking much longer than usual — the swarm may be slow. You can keep waiting or retry.');
+        if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS || st?.poisoned) {
+          setWarmError(st?.poisoned
+            ? 'This source is poisonous (corrupt data on purpose). It will never play — go back and choose another source.'
+            : (st?.stalled
+              ? 'This swarm is not sending data (it may be dead or a fake). You can keep waiting or go back and pick another source.'
+              : 'Taking much longer than usual — the swarm may be slow. You can keep waiting or retry.'));
         }
-        // Dead swarm? Poll gently — same liveness, a fraction of the CPU.
-        const nextDelay = st?.stalled ? WARM_POLL_STALLED_MS : WARM_POLL_MS;
+        // Dead/poisoned swarm? Poll gently — same liveness, a fraction of the CPU.
+        const nextDelay = (st?.stalled || st?.poisoned) ? WARM_POLL_STALLED_MS : WARM_POLL_MS;
         warmPollTimer.current = setTimeout(() => { void pollOnce(); }, nextDelay);
       } catch (err) {
         if (generation.current !== gen) return;
@@ -382,7 +393,7 @@ export default function PlayerPage() {
     setConnNote(null);
     setFatal(null);
     setLoading(false);
-    setWarm(null);
+    setWarmBoth(null);
     // Prefer the mirrored playhead: the <video> element may already be
     // unmounted or reset to 0 after an error, losing the resume position.
     beginWarmup(gen, magnetRef.current, fileIdxRef.current, curTimeRef.current || videoRef.current?.currentTime || 0);
@@ -693,7 +704,9 @@ export default function PlayerPage() {
     } else if (st.state === 'connecting') {
       parts.push('Connected — starting buffer…');
     } else {
-      if (st.stalled) {
+      if (st.poisoned) {
+        parts.push('⛔ This swarm is feeding CORRUPT data (pieces fail verification) — the server throttled it to protect itself and the other tabs. Playback can\'t recover; pick another source.');
+      } else if (st.stalled) {
         parts.push(st.stalledReason === 'no-peers'
           ? '⏸ No peers sending data — this swarm looks dead or unreachable. Holding the slot and retrying…'
           : '⏸ Peers connected but no data is flowing — the swarm may be dead or fake. Still trying…');

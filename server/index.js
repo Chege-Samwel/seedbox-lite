@@ -209,6 +209,19 @@ function destroyTorrentEverywhere(infoHash) {
 const governor = windowGovernor.create(client, destroyTorrentEverywhere);
 app.locals.governor = governor;
 
+// SWARM GUARD — a poisoned/fake swarm (garbage pieces at speed) otherwise
+// pegs the event loop on hash-verify-discard churn until NOTHING loads:
+// health checks, login, history — the field "the stall crashed the server".
+const swarmGuard = require('./lib/swarmGuard').start({ client });
+app.locals.swarmGuard = swarmGuard;
+
+// STREAM SHED — bound concurrent live stream responses. On a starved swarm,
+// browser retries + the player's auto-reconnect can stack hundreds of
+// long-lived range responses that each pull trickles; past this cap we
+// answer a cheap fast-503 (the player auto-retries) instead of piling up.
+let activeStreamResponses = 0;
+const MAX_STREAM_RESPONSES = parseInt(process.env.MAX_STREAM_RESPONSES || (tuning.lite ? '12' : '24'), 10);
+
 // Deduplicate concurrent loads: user habits (double-click, exit & re-enter,
 // home re-render + player open) otherwise spawn parallel client.add() calls
 // for the same hash — three 60s timeouts, duplicate warmups, and a whole-file
@@ -1260,7 +1273,15 @@ require('./routes/features')(app);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    guards: {
+      swarm: swarmGuard.summary(),
+      activeStreams: activeStreamResponses,
+      maxStreams: MAX_STREAM_RESPONSES,
+    },
+  });
 });
 
 // UNIVERSAL ADD TORRENT - Always succeeds
@@ -1932,7 +1953,21 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       clearTimeout(streamTimeout);
       return res.status(404).json({ error: 'File not found' });
     }
-    
+
+    // Shed load before committing a long-lived response — a cheap 503 here
+    // costs nothing to retry, a piled-up starved response costs the loop.
+    if (activeStreamResponses >= MAX_STREAM_RESPONSES) {
+      clearTimeout(streamTimeout);
+      console.warn(`🚦 Stream shed: ${activeStreamResponses}/${MAX_STREAM_RESPONSES} active — fast 503`);
+      res.set('Retry-After', '2');
+      return res.status(503).json({ error: 'Server streaming at capacity — retry shortly', retryable: true, retryAfterSecs: 2 });
+    }
+    activeStreamResponses++;
+    let streamSlotHeld = true;
+    const releaseStreamSlot = () => {
+      if (streamSlotHeld) { streamSlotHeld = false; activeStreamResponses--; }
+    };
+
     // Ensure torrent is active and file is selected with high priority
     torrent.resume();
     // GOVERNOR: register this stream and select ONLY a bounded window around
@@ -1977,6 +2012,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       if (!streamEnded) {
         streamEnded = true;
         clearTimeout(streamTimeout);
+        releaseStreamSlot();
         governor.endStream(govStreamId); // governor keeps the region ~4 min, then drops it
         if (debugLevel) console.log(`✅ Stream ${streamRequestId} ended properly`);
       }
@@ -2121,6 +2157,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
     
   } catch (error) {
     clearTimeout(streamTimeout);
+    if (typeof releaseStreamSlot === 'function') releaseStreamSlot();
     console.error(`❌ Universal streaming failed:`, error.message);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Streaming failed: ' + error.message });
@@ -2175,6 +2212,16 @@ app.get('/api/torrents/:identifier/files/:fileIdx/download', async (req, res) =>
       });
       
       const stream = file.createReadStream({ start, end });
+      // CRITICAL: an unhandled 'error' on a piped stream is an UNCAUGHT
+      // EXCEPTION and takes the whole process down (field "the stall
+      // crashed the server"). Client aborts are benign; store failures
+      // (reap mid-download) now end the response instead of the server.
+      stream.on('error', (err) => {
+        if (!/premature|aborted|ECONNRESET|EPIPE|cancel/i.test(err.message || '')) {
+          console.error(`❌ Download stream error: ${err.message}`);
+        }
+        try { if (!res.writableEnded) res.end(); } catch (_) { /* fine */ }
+      });
       stream.pipe(res);
     } else {
       res.writeHead(200, {
@@ -2182,7 +2229,14 @@ app.get('/api/torrents/:identifier/files/:fileIdx/download', async (req, res) =>
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Type': 'application/octet-stream'
       });
-      file.createReadStream().pipe(res);
+      const stream = file.createReadStream();
+      stream.on('error', (err) => {
+        if (!/premature|aborted|ECONNRESET|EPIPE|cancel/i.test(err.message || '')) {
+          console.error(`❌ Download stream error: ${err.message}`);
+        }
+        try { if (!res.writableEnded) res.end(); } catch (_) { /* fine */ }
+      });
+      stream.pipe(res);
     }
     
   } catch (error) {

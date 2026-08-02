@@ -171,6 +171,10 @@ function transcodeInto({ srcUrl, quality, startSecs = 0, token, res, label }) {
   });
   // Backpressure pacing: pipe() applies flow control, ffmpeg blocks on its
   // stdout buffer and naturally throttles to the player's consumption.
+  // An unhandled stdout 'error' would be an uncaught exception → whole
+  // process down; swallow it and let the session cleanup path finish.
+  proc.stdout.on('error', () => { try { if (!res.writableEnded) res.end(); } catch (_) { /* fine */ } });
+  res.on('error', () => { try { proc.kill('SIGKILL'); } catch (_) { /* fine */ } });
   proc.stdout.pipe(res);
   return { ok: true, quality: q, key };
 }
