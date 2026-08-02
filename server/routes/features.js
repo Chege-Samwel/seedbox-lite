@@ -36,11 +36,12 @@ function withFallback(promise, ms, fallback) {
 }
 
 /**
- * Live state for a torrent, incl. warmup (head-of-file buffering) status.
+ * Live state for a torrent. `loading` distinguishes a genuinely connecting
+ * torrent from a reaped/absent one the user must wake by pressing Play.
  */
-function liveState(torrent, preferredFileIndex = null) {
+function liveState(torrent, preferredFileIndex = null, { loading = false } = {}) {
   if (!torrent || !torrent.ready) {
-    return { connected: false, readyState: 'connecting' };
+    return { connected: !!torrent, readyState: loading || torrent ? 'connecting' : 'sleeping' };
   }
   const files = torrent.files || [];
   let file = null;
@@ -94,26 +95,21 @@ function liveState(torrent, preferredFileIndex = null) {
   };
 }
 
-/** Begin buffering the head of the primary video file for fast playback start. */
-function startWarmup(torrent, preferredFileIndex = null) {
-  try {
-    if (!torrent || !torrent.files || !torrent.files.length) return;
-    const files = torrent.files;
-    let file = null;
-    if (preferredFileIndex != null && files[preferredFileIndex]) file = files[preferredFileIndex];
-    else {
-      const videos = files.filter((f) => VIDEO_EXTS.includes(extOf(f.name)));
-      file = (videos.length ? videos : files).sort((a, b) => b.length - a.length)[0];
-    }
-    if (!file) return;
-    const pieceLength = torrent.pieceLength;
-    const startPiece = Math.floor(file.offset / pieceLength);
-    const warmPieces = Math.ceil(Math.min(24 * 1024 * 1024, file.length) / pieceLength);
-    torrent.select(startPiece, Math.min(startPiece + warmPieces, torrent.pieces.length - 1), 1);
-    console.log(`🔥 Warmup started: ${torrent.name} (${warmPieces} head pieces of "${file.name}")`);
-  } catch (err) {
-    console.warn(`⚠️ Warmup select failed: ${err.message}`);
+/** Resolve {fileIdx, bytePos, targetBytes} from seconds-vs-bytes request payloads. */
+function resolveWarmPosition(torrent, fileIdx, body) {
+  const files = torrent?.files || [];
+  const file = fileIdx != null ? files[fileIdx] : null;
+  const { positionSecs, durationSecs, bytePos, windowSecs } = body || {};
+  let pos = Number(bytePos) || 0;
+  let target = Number(body?.targetBytes) || 0;
+  if (file && durationSecs > 0) {
+    const bytesPerSec = file.length / durationSecs;
+    if (positionSecs != null) pos = (Math.max(0, parseFloat(positionSecs) || 0)) * bytesPerSec;
+    // "the starting 1 minute": 60s worth of bytes, sensible clamps
+    const minW = 60;
+    target = Math.max(target, bytesPerSec * Math.max(15, Math.min(parseFloat(windowSecs) || minW, 180)));
   }
+  return { bytePos: pos, targetBytes: target };
 }
 
 /** Very small SRT → WebVTT converter for the subtitle proxy. */
@@ -283,6 +279,73 @@ module.exports = function mount(app) {
     res.json({ ok: true });
   });
 
+  // ============ WARMUP — starts on Play click, re-centers on seek ============
+  // POST kicks loading (magnet accepted) + selects the "1 minute" window at
+  // the play position; GET polls status. Every call touches the governor so
+  // a warming torrent is never reaped as idle.
+
+  function warmupPayload(req) {
+    const b = req.body || req.query || {};
+    return b;
+  }
+
+  function findTorrentLocal(infoHash) {
+    const { client } = wt();
+    if (!client || !infoHash) return null;
+    return client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === infoHash.toLowerCase()) || null;
+  }
+
+  app.post('/api/torrents/:identifier/warmup', requireSession, (req, res) => {
+    const orchestrator = req.app.locals.warmup;
+    const governor = req.app.locals.governor;
+    if (!orchestrator) return res.status(503).json({ error: 'Warmup engine not ready' });
+    const hash = normalizeHash(req.params.identifier) || String(req.params.identifier || '').toLowerCase();
+    if (!hash) return res.status(400).json({ error: 'Invalid info hash' });
+    const { magnet, fileIdx } = warmupPayload(req);
+
+    const governorTouch = () => governor && governor.touchHash(hash);
+    governorTouch();
+
+    let torrent = findTorrentLocal(hash);
+    if (!torrent) {
+      // Not in the engine (fresh, reaped, or post-restart): start loading
+      // from the magnet the client remembered, respond "loading" instantly.
+      const { load, isLoading } = wt();
+      const magnetUri = typeof magnet === 'string' && magnet.startsWith('magnet:')
+        ? magnet
+        : `magnet:?xt=urn:btih:${hash}`;
+      if (load && !isLoading?.(hash)) {
+        load(magnetUri).catch((err) => {
+          console.warn(`⚠️ Warmup load failed for ${hash}: ${err.message}`);
+        });
+      }
+      return res.json({ state: 'loading', connected: false, bufferedFromPos: 0, targetBytes: 0 });
+    }
+
+    if (!torrent.ready) {
+      governorTouch();
+      return res.json({ state: 'loading', connected: true, bufferedFromPos: 0, targetBytes: 0 });
+    }
+
+    const idx = fileIdx != null ? parseInt(fileIdx, 10) : orchestrator.primaryVideoIndex(torrent);
+    const { bytePos, targetBytes } = resolveWarmPosition(torrent, idx, warmupPayload(req));
+    const state = orchestrator.start({ infoHash: hash, fileIdx: idx, bytePos, targetBytes });
+    res.json(state);
+  });
+
+  app.get('/api/torrents/:identifier/warmup', requireSession, (req, res) => {
+    const orchestrator = req.app.locals.warmup;
+    const governor = req.app.locals.governor;
+    if (!orchestrator) return res.status(503).json({ error: 'Warmup engine not ready' });
+    const hash = normalizeHash(req.params.identifier) || String(req.params.identifier || '').toLowerCase();
+    if (!hash) return res.status(400).json({ error: 'Invalid info hash' });
+    if (governor) governor.touchHash(hash);
+    const torrent = findTorrentLocal(hash);
+    const idx = req.query.fileIdx != null ? parseInt(req.query.fileIdx, 10) : (torrent && torrent.ready ? orchestrator.primaryVideoIndex(torrent) : null);
+    const { bytePos, targetBytes } = torrent ? resolveWarmPosition(torrent, idx, req.query) : { bytePos: 0, targetBytes: 0 };
+    res.json(orchestrator.status({ infoHash: hash, fileIdx: idx, bytePos, targetBytes }));
+  });
+
   // ============ TORRENT-EMBEDDED SUBTITLES ============
   // Streams .srt/.vtt files that live inside a torrent, converting SRT→VTT
   // so the browser <track> element can render them.
@@ -334,23 +397,32 @@ module.exports = function mount(app) {
 
   app.get('/api/me/library', requireSession, (req, res) => {
     const data = userStore.getUser(req.user.id);
-    const { load, client } = wt();
+    const { load, client, isLoading } = wt();
     const items = data.library.map((item) => {
       const torrent = findTorrent(item.infoHash);
-      // Rehydrate: a server restart empties the engine, so lazily re-load
-      // each remembered magnet in the background (once) when the user opens
-      // the pipeline again — history is never lost.
+      // Rehydrate METADATA ONLY: a server restart empties the engine, so we
+      // lazily re-load remembered magnets in the background to learn file
+      // names/sizes. No warmup — buffering starts on Play click, so many
+      // pipeline items never download anything.
       if (!torrent && load && client && !rehydrating.has(item.infoHash)) {
         rehydrating.add(item.infoHash);
         load(item.magnet)
           .then((t) => {
             if (!t) return;
             const live = liveState(t);
-            userStore.updateLibraryItem(req.user.id, item.id, {
+            const patch = {
               fileIndex: item.fileIndex ?? live.fileIndex ?? undefined,
               fileName: item.fileName ?? live.fileName ?? undefined,
-            });
-            startWarmup(t, item.fileIndex ?? live.fileIndex ?? null);
+            };
+            // Auto-title from real file names when the user never named it
+            if (item.titleAuto) {
+              const derived = meta.deriveFromFiles(t.files || []);
+              if (derived.title) {
+                patch.title = derived.title;
+                if (derived.isSeries && !item.showName) patch.showName = derived.title;
+              }
+            }
+            userStore.updateLibraryItem(req.user.id, item.id, patch);
           })
           .catch((err) => {
             if (!/duplicate/i.test(err.message || '')) {
@@ -359,7 +431,8 @@ module.exports = function mount(app) {
           })
           .finally(() => setTimeout(() => rehydrating.delete(item.infoHash), 5000));
       }
-      return { ...item, live: liveState(torrent, item.fileIndex ?? null) };
+      const loading = !torrent && (rehydrating.has(item.infoHash) || isLoading?.(item.infoHash));
+      return { ...item, live: liveState(torrent, item.fileIndex ?? null, { loading }) };
     });
     res.json({ items });
   });
@@ -374,11 +447,25 @@ module.exports = function mount(app) {
     const { load } = wt();
     if (!load) return res.status(500).json({ error: 'Torrent engine not ready' });
 
+    // Magnet `dn` (display-name) hint — a much better fallback than the hash
+    const dnMatch = raw.match(/[?&]dn=([^&]+)/i);
+    const dnTitle = dnMatch ? decodeURIComponent(dnMatch[1].replace(/\+/g, ' ')).trim() : null;
+
     // Deduplicate per user
     const data = userStore.getUser(req.user.id);
     const existing = data.library.find((i) => i.infoHash === infoHash);
     if (existing) {
-      return res.json({ ok: true, item: existing, duplicate: true, live: liveState(findTorrent(infoHash), existing.fileIndex ?? null) });
+      // Pressing "add" again on an existing item is a nudge to (re)load it —
+      // covers "quit & re-open" reliability without a separate wake route.
+      const existingTorrent = findTorrent(infoHash);
+      if (!existingTorrent && load && !rehydrating.has(infoHash)) {
+        rehydrating.add(infoHash);
+        load(existing.magnet)
+          .catch(() => {})
+          .finally(() => setTimeout(() => rehydrating.delete(infoHash), 5000));
+      }
+      const loading = !existingTorrent && (rehydrating.has(infoHash) || wt().isLoading?.(infoHash));
+      return res.json({ ok: true, item: existing, duplicate: true, live: liveState(existingTorrent, existing.fileIndex ?? null, { loading }) });
     }
 
     try {
@@ -388,7 +475,7 @@ module.exports = function mount(app) {
       );
 
       // Derive keywords for the picture library
-      const cleaned = meta.cleanTitle(title || showName || knownTorrent?.name || infoHash);
+      const cleaned = meta.cleanTitle(title || showName || knownTorrent?.name || dnTitle || infoHash);
       const episodeInfo = meta.parseEpisode(knownTorrent?.name || title || '');
       const finalKind = kind !== 'other' ? kind : (showName || episodeInfo.season ? 'episode' : 'other');
 
@@ -396,7 +483,8 @@ module.exports = function mount(app) {
         id: crypto.randomBytes(6).toString('hex'),
         magnet: raw.startsWith('magnet:') ? raw : `magnet:?xt=urn:btih:${infoHash}`,
         infoHash,
-        title: (title || '').trim() || cleaned.title || knownTorrent?.name || infoHash,
+        title: (title || '').trim() || cleaned.title || knownTorrent?.name || dnTitle || infoHash,
+        titleAuto: !(title || '').trim(), // auto-derived → safe to overwrite from file names
         kind: finalKind,
         showName: showName || (finalKind === 'episode' ? cleaned.title : null) || null,
         season: season ?? episodeInfo.season,
@@ -417,24 +505,38 @@ module.exports = function mount(app) {
           item.fileIndex = live.fileIndex;
           item.fileName = live.fileName;
         }
-        startWarmup(knownTorrent, item.fileIndex);
+        // Title from the real file names (series → shared part across files)
+        if (item.titleAuto) {
+          const derived = meta.deriveFromFiles(knownTorrent.files || []);
+          if (derived.title) {
+            item.title = derived.title;
+            if (derived.isSeries && !item.showName) item.showName = derived.title;
+          }
+        }
       }
 
       userStore.addLibraryItem(req.user.id, item);
 
-      // Load in the background so the pipeline responds instantly; once
-      // metadata resolves, pick the primary file and begin the warmup.
+      // Load METADATA in the background so the pipeline responds instantly;
+      // buffering does NOT start here (warmup fires on Play click only).
       if (!readyTorrent) {
         const magnet = raw.startsWith('magnet:') ? raw : `magnet:?xt=urn:btih:${infoHash}`;
         load(magnet)
           .then((torrent) => {
             if (!torrent) return;
             const live = liveState(torrent);
-            userStore.updateLibraryItem(req.user.id, item.id, {
+            const patch = {
               fileIndex: live.fileIndex ?? undefined,
               fileName: live.fileName ?? undefined,
-            });
-            startWarmup(torrent, live.fileIndex ?? null);
+            };
+            if (item.titleAuto) {
+              const derived = meta.deriveFromFiles(torrent.files || []);
+              if (derived.title) {
+                patch.title = derived.title;
+                if (derived.isSeries && !item.showName) patch.showName = derived.title;
+              }
+            }
+            userStore.updateLibraryItem(req.user.id, item.id, patch);
           })
           .catch((err) => {
             if (!/duplicate/i.test(err.message || '')) {

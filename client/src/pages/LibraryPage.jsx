@@ -59,7 +59,7 @@ export default function LibraryPage() {
         episode: form.kind === 'episode' && form.episode !== '' ? parseInt(form.episode, 10) : undefined,
       };
       const res = await addToLibrary(payload);
-      toast(res.duplicate ? 'That magnet is already in your pipeline' : 'Added — warming up the stream');
+      toast(res.duplicate ? 'That magnet is already in your pipeline' : 'Added — press ▶ when you want to watch');
       setForm({ magnet: '', title: '', kind: 'movie', showName: '', season: '', episode: '' });
       await refresh(true);
     } catch (err) { toast(err.message, 'error'); }
@@ -108,8 +108,10 @@ export default function LibraryPage() {
   };
 
   const playItem = (item) => {
+    // Play ALWAYS works — the player warms ~1 minute and resumes. The magnet
+    // rides along so a sleeping/reaped torrent wakes instantly.
     navigate(`/watch/${encodeURIComponent(`torrent:${item.infoHash}:${item.fileIndex ?? 0}`)}`, {
-      state: { title: item.title, fileIndex: item.fileIndex ?? 0 },
+      state: { title: item.title, fileIndex: item.fileIndex ?? 0, magnet: item.magnet },
     });
   };
 
@@ -120,7 +122,7 @@ export default function LibraryPage() {
       <div className="page" style={{ paddingTop: 24 }}>
         <h1 className="page-title">Pipeline</h1>
         <p className="page-sub">
-          Add magnets for content you have rights to. Streams are held in server memory and warmed up for instant playback. <strong>Only add content you may legally access.</strong>
+          Add magnets for content you have rights to. Nothing downloads until you press ▶ — then ~1 minute buffers and playback starts. <strong>Only add content you may legally access.</strong>
         </p>
 
         <form className="pipe-form" onSubmit={submit}>
@@ -172,13 +174,13 @@ export default function LibraryPage() {
         </form>
 
         {items.length === 0 && (
-          <EmptyState emoji="🧲" title="Pipeline empty">Add your first magnet above — it will appear here and start warming up.</EmptyState>
+          <EmptyState emoji="🧲" title="Pipeline empty">Add your first magnet above — it appears here without downloading; warm-up starts when you press ▶.</EmptyState>
         )}
 
         {items.map((item) => {
           const live = item.live || {};
           const warmPct = live.headTargetBytes ? Math.min((live.headBytes / live.headTargetBytes) * 100, 100) : 0;
-          const canPlay = live.fileIndex != null || item.fileIndex != null;
+          const sleeping = live.readyState === 'sleeping';
           return (
             <div className="lib-item" key={item.id}>
               <div className="lib-poster">
@@ -203,12 +205,14 @@ export default function LibraryPage() {
                 <div className="speed-line">
                   {live.connected
                     ? `${formatBytes(live.headBytes || 0)} buffered · ${formatSpeed(live.downloadSpeed || 0)} · ${live.peers || 0} peers · ${Math.round((live.progress || 0) * 100)}% total`
-                    : 'Connecting to peers…'}
+                    : sleeping
+                      ? 'Sleeping 💤 — press ▶ to wake and resume instantly'
+                      : 'Connecting to peers…'}
                 </div>
               </div>
               <div className="lib-actions">
-                <button className="icon-btn" title={`${canPlay ? 'Play' : 'Waiting for file info'}`} disabled={!canPlay} onClick={() => playItem(item)}>
-                  <Play />
+                <button className="icon-btn" title={sleeping ? 'Play (wakes the torrent)' : 'Play'} onClick={() => playItem(item)}>
+                  <Play fill={sleeping ? 'currentColor' : 'none'} />
                 </button>
                 <button
                   className={`icon-btn ${isFavorite(`lib:${item.id}`) ? 'on' : ''}`}

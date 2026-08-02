@@ -62,6 +62,7 @@ class RollingDiskChunkStore {
     this.chunks = new Map(); // index → { size, at }
     this.bytes = 0;
     this.closed = false;
+    this._logGate = { at: 0, evicted: 0 }; // aggregate noisy eviction logs
     fs.mkdirSync(this.dir, { recursive: true });
     registry.add(this);
   }
@@ -141,7 +142,17 @@ class RollingDiskChunkStore {
       try { fs.unlinkSync(this._file(oldestIdx)); } catch (_) { /* best effort */ }
     }
     if (removed > 0) {
-      console.log(`🗑️ RollingStore[${this.name.slice(0, 34)}]: evicted ${removed} trailing chunks · ${(this.bytes / 1048576).toFixed(0)}MB kept`);
+      // One aggregated line every ~10s per store — per-piece evictions during
+      // steady playback otherwise flood the log with identical "1 trailing
+      // chunks" lines.
+      const gate = this._logGate;
+      gate.evicted += removed;
+      const now = Date.now();
+      if (now - gate.at > 10000) {
+        console.log(`🗑️ RollingStore[${this.name.slice(0, 34)}]: evicted ${gate.evicted} trailing chunks · ${(this.bytes / 1048576).toFixed(0)}MB kept`);
+        gate.at = now;
+        gate.evicted = 0;
+      }
     }
   }
 }

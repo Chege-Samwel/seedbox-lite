@@ -2,13 +2,14 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ArrowLeft, MessageSquare, Upload, Maximize, Minimize,
-  Play, Pause, Volume2, VolumeX, PictureInPicture2,
+  Play, Pause, Volume2, VolumeX, PictureInPicture2, RotateCw,
 } from 'lucide-react';
 import {
   getArchiveItem, getSubtitleProxyUrl, getTorrentStreamUrl, getTorrentDetails,
   getTorrentSubtitleUrl, getHistoryEntry, saveHistory, getLibrary, sendStreamHeartbeat,
+  startWarmup, getWarmupStatus,
 } from '../services/api';
-import { formatTime } from '../utils/format';
+import { formatTime, formatBytes, formatSpeed } from '../utils/format';
 import { useToast } from '../hooks/useToast';
 
 function srtToVtt(text) {
@@ -21,6 +22,8 @@ function srtToVtt(text) {
 const CAP_SIZES = ['Small', 'Medium', 'Large'];
 const CAP_CLASSES = ['cap-s', 'cap-m', 'cap-l'];
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const WARM_POLL_MS = 1500;
+const WARM_GIVE_UP_MS = 150000; // 2.5 min of polling before offering manual retry
 
 export default function PlayerPage() {
   const { source } = useParams();
@@ -41,6 +44,13 @@ export default function PlayerPage() {
   const dragging = useRef(false);
   const scrubRaf = useRef(null);
   const lastTimePush = useRef(0);
+  const lastUiPoke = useRef(0);
+  const warmPollTimer = useRef(null);
+  const warmStartedAt = useRef(0);
+  const lastSeekWarm = useRef(0);
+  const pendingSeek = useRef(null);
+  const generation = useRef(0); // cancels stale async runs on re-entry/unmount
+  const archiveRetried = useRef(false);
 
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState(null);
@@ -49,9 +59,15 @@ export default function PlayerPage() {
   const [subMenu, setSubMenu] = useState(false);
   const [tracks, setTracks] = useState([]);
   const [activeTrack, setActiveTrack] = useState(-1);
-  const [resumePos, setResumePos] = useState(null);
+  const [resumeNote, setResumeNote] = useState(null); // resumed position toast
   const [info, setInfo] = useState({ title: 'Now Playing', subtitle: '', poster: null, backdrop: null, src: null, kind: 'movie' });
   const [fs, setFs] = useState(false);
+  const [srcKey, setSrcKey] = useState(0); // bump to force <video> remount on retry
+
+  // Warmup gating (torrent sources only)
+  const [phase, setPhase] = useState('play'); // 'play' (archive: play immediately) | 'warming' | 'ready'
+  const [warm, setWarm] = useState(null); // last warmup status payload
+  const [warmError, setWarmError] = useState(null);
 
   // playback-ui state
   const [playing, setPlaying] = useState(false);
@@ -72,15 +88,101 @@ export default function PlayerPage() {
     [type, identifier, startIndex]
   );
   const locationMeta = location.state || {};
+  const magnetRef = useRef(locationMeta.magnet || null);
+  const durRef = useRef(0);
+  const fileIdxRef = useRef(locationMeta.fileIndex ?? startIndex);
+  const curTimeRef = useRef(0); // mirrors curTime for async paths (retry/onError)
+  const resumeTarget = useRef(0); // position to seek to once the gate opens
+
+  // ---------- Warming helpers ----------
+  const applyReady = useCallback((v, startPos) => {
+    if (!v) return;
+    if (startPos > 1 && v.duration && startPos < v.duration - 0.5) {
+      if (v.readyState >= 1) {
+        try { v.currentTime = startPos; } catch { /* fine */ }
+      } else {
+        pendingSeek.current = startPos;
+      }
+    }
+    v.play?.().catch(() => { /* autoplay may need a tap — controls are there */ });
+    if (startPos > 10) {
+      setResumeNote(startPos);
+      setTimeout(() => setResumeNote((n) => (n === startPos ? null : n)), 6000);
+    }
+  }, []);
+
+  /** Kick a warmup window at a position (fire-and-forget; errors ignored here). */
+  const warmAt = useCallback((secs, { force = false } = {}) => {
+    if (type !== 'torrent') return;
+    const now = Date.now();
+    if (!force && now - lastSeekWarm.current < 800) return; // debounce scrub spam
+    lastSeekWarm.current = now;
+    startWarmup(identifier, {
+      magnet: magnetRef.current || undefined,
+      fileIdx: fileIdxRef.current,
+      positionSecs: Math.max(0, secs || 0),
+      durationSecs: durRef.current || undefined,
+      windowSecs: 60,
+    }).then((st) => {
+      if (st?.fileIndex != null) fileIdxRef.current = st.fileIndex;
+      setWarm(st);
+    }).catch(() => { /* status polling path reports real failures */ });
+  }, [type, identifier]);
+
+  /**
+   * The gated start: warm ~1 minute from the resume/start position, poll
+   * until ready, THEN attach the stream and play. Works no matter how the
+   * user got here — first play, exit & re-click, gi Server restart.
+   */
+  const beginWarmup = useCallback(async (gen, magnet, fileIndex, startPos) => {
+    setPhase('warming');
+    setWarmError(null);
+    warmStartedAt.current = Date.now();
+    const pollOnce = async () => {
+      try {
+        const st = await startWarmup(identifier, {
+          magnet: magnet || undefined,
+          fileIdx: fileIndex,
+          positionSecs: startPos || 0,
+          durationSecs: durRef.current || undefined,
+          windowSecs: 60,
+        });
+        if (generation.current !== gen) return;
+        if (st?.fileIndex != null) {
+          fileIdxRef.current = st.fileIndex;
+        } else {
+          st.fileIndex = fileIndex;
+        }
+        setWarm(st);
+        if (st.state === 'ready') {
+          resumeTarget.current = startPos || 0; // applied on first canplay
+          setPhase('ready');
+          setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current), fileIndex: fileIdxRef.current }));
+          setSrcKey((k) => k + 1);
+          return; // video 'canplay' event calls applyReady
+        }
+        if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS) {
+          setWarmError('Taking much longer than usual — the swarm may be slow. You can keep waiting or retry.');
+        }
+        warmPollTimer.current = setTimeout(() => { void pollOnce(); }, WARM_POLL_MS);
+      } catch (err) {
+        if (generation.current !== gen) return;
+        setWarmError(err.message || 'Warmup request failed');
+        warmPollTimer.current = setTimeout(() => { void pollOnce(); }, WARM_POLL_MS * 2);
+      }
+    };
+    await pollOnce();
+  }, [identifier]);
 
   // ---------- Load source ----------
   useEffect(() => {
+    const gen = ++generation.current;
     let cancelled = false;
     (async () => {
       try {
         if (type === 'archive') {
           const item = await getArchiveItem(identifier);
-          if (cancelled) return;
+          if (cancelled || generation.current !== gen) return;
           const video = item.videos[startIndex] || item.primaryVideo;
           if (!video) throw new Error('No streamable video file in this archive item.');
           const subs = (item.subtitles || []).map((s, i) => ({
@@ -91,49 +193,73 @@ export default function PlayerPage() {
             title: item.title, subtitle: item.year || '', kind: 'movie',
             poster: item.poster, backdrop: item.backdrop, src: video.url,
           });
+          setPhase('play');
         } else if (type === 'torrent') {
-          const details = await getTorrentDetails(identifier).catch(() => null);
-          const lib = await getLibrary().catch(() => ({ items: [] }));
+          // Everything is best-effort: details may 404 after a restart/reap,
+          // the library always has our magnet though.
+          const [details, lib, hist] = await Promise.all([
+            getTorrentDetails(identifier).catch(() => null),
+            getLibrary().catch(() => ({ items: [] })),
+            getHistoryEntry(historyKey).catch(() => null),
+          ]);
+          if (cancelled || generation.current !== gen) return;
           const item = lib.items?.find((i) => i.infoHash === identifier);
-          const fileIndex = locationMeta.fileIndex ?? item?.fileIndex ?? startIndex;
+          magnetRef.current = magnetRef.current || item?.magnet || null;
+
+          // Where do we start? Auto-resume (Netflix-style), else 0.
+          const pos = hist?.entry?.position;
+          const dur = hist?.entry?.duration;
+          const startPos = pos > 10 && (!dur || pos / dur < 0.9) ? pos : 0;
+          if (dur > 0) durRef.current = dur;
+
+          const fileIndex = locationMeta.fileIndex ?? item?.fileIndex
+            ?? details?.derived?.episodes?.[0]?.fileIndex ?? startIndex;
+          fileIdxRef.current = fileIndex;
+
           const fileName = details?.files?.[fileIndex]?.name || item?.fileName || '';
-          // Embedded subtitles living inside the torrent
+          // Title: user-set > derived-from-file-names (series shared part) > magnet name
+          const derivedTitle = details?.derived?.title;
+          const title = (item && !item.titleAuto && item.title) || locationMeta.title
+            || derivedTitle || item?.title || details?.torrent?.name || 'Pipeline item';
+
           const embedded = (details?.files || [])
             .filter((f) => /\.(srt|vtt)$/i.test(f.name))
             .map((f, i) => ({ id: `tor-${i}`, label: f.name, url: getTorrentSubtitleUrl(identifier, f.index) }));
           setTracks(embedded);
           setInfo({
-            title: locationMeta.title || item?.title || details?.torrent?.name || 'Pipeline item',
-            subtitle: item?.kind === 'episode' && item?.season != null ? `S${item.season} · E${item.episode}` : fileName,
-            kind: item?.kind || 'movie',
+            title,
+            subtitle: item?.kind === 'episode' && item?.season != null
+              ? `S${item.season} · E${item.episode ?? '?'}`
+              : (fileName || derivedTitle || ''),
+            kind: item?.kind || (details?.derived?.isSeries ? 'episode' : 'movie'),
             poster: item?.poster || null, backdrop: item?.backdrop || null,
-            src: getTorrentStreamUrl(identifier, fileIndex),
+            src: null, // attached on warmup ready
             extra: item ? { season: item.season, episode: item.episode, showKey: item.showName } : undefined,
             fileIndex,
           });
+          await beginWarmup(gen, magnetRef.current, fileIndex, startPos);
         } else {
           throw new Error('Unknown source type');
         }
       } catch (err) {
-        if (!cancelled) setFatal(err.message);
+        if (!cancelled && generation.current === gen) setFatal(err.message);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && generation.current === gen) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (warmPollTimer.current) clearTimeout(warmPollTimer.current);
+    };
   }, [type, identifier, startIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---------- Resume position ----------
-  useEffect(() => {
-    if (loading || fatal) return;
-    getHistoryEntry(historyKey)
-      .then((res) => {
-        const pos = res?.entry?.position;
-        const dur = res?.entry?.duration;
-        if (pos > 10 && (!dur || pos / dur < 0.9)) setResumePos(pos);
-      })
-      .catch(() => {});
-  }, [loading, fatal, historyKey]);
+  const retryWarmup = useCallback(() => {
+    const gen = ++generation.current;
+    setFatal(null);
+    setLoading(false);
+    setWarm(null);
+    beginWarmup(gen, magnetRef.current, fileIdxRef.current, videoRef.current?.currentTime || curTimeRef.current || 0);
+  }, [beginWarmup]);
 
   // ---------- Progress saving ----------
   const persist = useCallback(() => {
@@ -145,7 +271,7 @@ export default function PlayerPage() {
       poster: info.poster, backdrop: info.backdrop, kind: info.kind,
       source: type === 'archive'
         ? { type: 'archive', identifier, fileUrl: info.src, fileIndex: startIndex }
-        : { type: 'torrent', infoHash: identifier, fileIndex: startIndex, fileName: info.subtitle },
+        : { type: 'torrent', infoHash: identifier, fileIndex: info.fileIndex ?? startIndex, fileName: info.subtitle },
       position: v.currentTime, duration: v.duration,
       extra: info.extra,
     }).catch(() => {});
@@ -242,24 +368,57 @@ export default function PlayerPage() {
     }
   }, []);
 
+  // ---------- Go-to-time ----------
+  // Refined: snap the playhead, show the buffering state right away, and
+  // re-arm the server's ~1-minute window AT the target so playback resumes
+  // as soon as that minute is buffered (fast-forward behaves the same).
+  const performSeek = useCallback((secs) => {
+    const v = videoRef.current;
+    if (!v || !v.duration) return;
+    const target = Math.max(0, Math.min(secs, v.duration - 0.1));
+    try { v.currentTime = target; } catch { /* fine */ }
+    setCurTime(target);
+    curTimeRef.current = target;
+    setBufferedEnd(0);
+    setBuffering(true);
+    if (type === 'torrent') warmAt(target, { force: true });
+  }, [type, warmAt]);
+
   const seekTo = useCallback((frac) => {
     const v = videoRef.current;
     if (!v || !v.duration) return;
-    v.currentTime = Math.max(0, Math.min(frac * v.duration, v.duration - 0.1));
-  }, []);
+    performSeek(frac * v.duration);
+  }, [performSeek]);
 
-  // Auto-hide UI while playing
+  // Auto-hide UI while playing — mouse MOVEMENT (or any pointer activity)
+  // always brings navigation back; no click needed.
   const pokeUi = useCallback(() => {
-    setUiVisible(true);
+    const now = performance.now();
+    const wasHidden = !uiVisibleRef.current;
+    uiVisibleRef.current = true;
+    if (wasHidden || now - lastUiPoke.current > 400) {
+      lastUiPoke.current = now;
+      setUiVisible(true);
+    }
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => {
+      uiVisibleRef.current = false;
       if (videoRef.current && !videoRef.current.paused && !dragging.current) setUiVisible(false);
     }, 2800);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const uiVisibleRef = useRef(uiVisible);
+  useEffect(() => { uiVisibleRef.current = uiVisible; }, [uiVisible]);
 
   useEffect(() => {
     pokeUi();
     return () => hideTimer.current && clearTimeout(hideTimer.current);
+  }, [pokeUi]);
+
+  const onShellPointerMove = useCallback((e) => {
+    // Touch taps are handled by onTapStage; mouse/pen movement = poke
+    if (e.pointerType && e.pointerType !== 'mouse' && e.pointerType !== 'pen') return;
+    pokeUi();
   }, [pokeUi]);
 
   // Scrubber events — rAF-throttled so hover feels silk-smooth even at
@@ -278,13 +437,25 @@ export default function PlayerPage() {
       const frac = pendingFrac.current;
       if (frac == null) return;
       setHoverScrub({ frac, secs: frac * duration });
-      if (dragging.current) seekTo(frac);
+      if (dragging.current) {
+        // Live-preview the knob while dragging; the real seek + warmup
+        // fires on pointer-up (scrub spam would hammer the server).
+        setCurTime(frac * duration);
+      }
     });
   };
   const onScrubDown = (e) => {
     dragging.current = true;
     onScrubMove(e);
-    const up = () => { dragging.current = false; pokeUi(); window.removeEventListener('pointerup', up); };
+    const up = (ev) => {
+      dragging.current = false;
+      pokeUi();
+      window.removeEventListener('pointerup', up);
+      if (scrubRef.current && duration) {
+        const clientX = ev.clientX ?? ev.changedTouches?.[0]?.clientX;
+        if (clientX != null) seekTo(fracFromEvent(clientX));
+      }
+    };
     window.addEventListener('pointerup', up);
   };
 
@@ -306,8 +477,8 @@ export default function PlayerPage() {
       if (!v) return;
       switch (e.key) {
         case ' ': e.preventDefault(); togglePlay(); break;
-        case 'ArrowRight': v.currentTime += 10; break;
-        case 'ArrowLeft': v.currentTime -= 10; break;
+        case 'ArrowRight': performSeek((v.currentTime || 0) + 10); break;
+        case 'ArrowLeft': performSeek(Math.max(0, (v.currentTime || 0) - 10)); break;
         case 'f': toggleFullscreen(); break;
         case 'm': setMuted((m) => { v.muted = !m; return !m; }); break;
         default: return;
@@ -316,7 +487,7 @@ export default function PlayerPage() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, toggleFullscreen, pokeUi]);
+  }, [togglePlay, toggleFullscreen, pokeUi, performSeek]);
 
   // Tap handling: single = toggle UI, double = fullscreen
   const onTapStage = () => {
@@ -330,6 +501,7 @@ export default function PlayerPage() {
   const progressFrac = duration ? curTime / duration : 0;
   const bufferedFrac = duration ? bufferedEnd / duration : 0;
   const goBack = () => navigate(-1);
+  const warming = type === 'torrent' && phase === 'warming' && !fatal;
 
   if (fatal) {
     return (
@@ -337,14 +509,47 @@ export default function PlayerPage() {
         <div className="center-wrap" style={{ color: '#fff' }}>
           <div style={{ fontSize: 40 }}>🎬</div>
           <p>{fatal}</p>
-          <button className="btn btn-primary" onClick={goBack}>Go back</button>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            {type === 'torrent' && (
+              <button className="btn btn-primary" onClick={retryWarmup}>
+                <RotateCw size={16} /> Retry
+              </button>
+            )}
+            <button className="btn btn-dark" onClick={goBack}>Go back</button>
+          </div>
         </div>
       </div>
     );
   }
 
+  // Status line while gating on warmup
+  const warmLine = (() => {
+    if (!warming) return '';
+    const st = warm || {};
+    if (warmError && !st.state) return warmError;
+    const parts = [];
+    if (st.state === 'loading' || st.state === 'missing') {
+      parts.push(st.state === 'missing' ? 'Waking the torrent…' : 'Connecting to peers & fetching metadata…');
+      if (st.state === 'missing' && !magnetRef.current) parts.push('no magnet on record — add it again if this persists');
+    } else if (st.state === 'connecting') {
+      parts.push('Connected — starting buffer…');
+    } else {
+      const got = formatBytes(st.bufferedFromPos || 0);
+      const want = formatBytes(st.targetBytes || 0);
+      parts.push(`Buffering the first minute — ${got} / ${want}`);
+      if (st.speed > 0) parts.push(`${formatSpeed(st.speed)}${st.etaSecs != null && st.etaSecs < 600 ? ` · ~${Math.ceil(st.etaSecs)}s` : ''}`);
+      parts.push(`${st.peers || 0} peers`);
+    }
+    return parts.filter(Boolean).join(' · ');
+  })();
+
   return (
-    <div className={`player-shell ${CAP_CLASSES[capSize]} ${uiVisible ? '' : 'ui-hidden'}`} onClick={onTapStage}>
+    <div
+      className={`player-shell ${CAP_CLASSES[capSize]} ${uiVisible ? '' : 'ui-hidden'}`}
+      onClick={onTapStage}
+      onPointerMove={onShellPointerMove}
+      onMouseMove={onShellPointerMove}
+    >
       {/* Top bar */}
       <div className={`player-topbar ${uiVisible ? '' : 'hidden'}`} onClick={(e) => e.stopPropagation()}>
         <button className="icon-btn" onClick={goBack} style={{ background: 'rgba(0,0,0,0.4)' }}>
@@ -359,22 +564,65 @@ export default function PlayerPage() {
       <div className="player-stage" onClick={(e) => e.stopPropagation()}>
         {loading ? (
           <div className="spinner" />
-        ) : (
+        ) : info.src ? (
           <video
+            key={srcKey}
             ref={videoRef}
             src={info.src}
             controls={isIos} /* iOS handles custom controls poorly */
             playsInline
             crossOrigin="anonymous"
             style={{ width: '100%', height: '100%' }}
-            onWaiting={() => setBuffering(true)}
+            onWaiting={() => {
+              setBuffering(true);
+              // Stall self-heal: nudge the server window to the playhead
+              if (type === 'torrent') warmAt(videoRef.current?.currentTime || 0);
+            }}
             onPlaying={() => { setBuffering(false); setPlaying(true); }}
-            onCanPlay={() => setBuffering(false)}
+            onCanPlay={() => {
+              setBuffering(false);
+              const v = videoRef.current;
+              if (v && pendingSeek.current != null && pendingSeek.current > 1) {
+                try { v.currentTime = pendingSeek.current; } catch { /* fine */ }
+                pendingSeek.current = null;
+              }
+              if (type === 'torrent' && phase === 'ready') {
+                setPhase('play');
+                applyReady(v, resumeTarget.current);
+                resumeTarget.current = 0;
+              }
+            }}
             onPlay={() => setPlaying(true)}
-            onPause={() => { setPlaying(false); setUiVisible(true); }}
+            onPause={() => { setPlaying(false); pokeUi(); }}
             onEnded={() => { setPlaying(false); setUiVisible(true); persist(); }}
-            onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
-            onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
+            onLoadedMetadata={() => {
+              const d = videoRef.current?.duration || 0;
+              setDuration(d);
+              if (d > 0) durRef.current = d;
+            }}
+            onDurationChange={() => {
+              const d = videoRef.current?.duration || 0;
+              setDuration(d);
+              if (d > 0) durRef.current = d;
+            }}
+            onSeeking={() => setBuffering(true)}
+            onError={() => {
+              if (type === 'archive') {
+                // IA CDN occasionally blips — one silent reload retry
+                if (!archiveRetried.current && videoRef.current) {
+                  archiveRetried.current = true;
+                  setTimeout(() => { try { videoRef.current?.load(); videoRef.current?.play?.().catch(() => {}); } catch { /* fine */ } }, 1500);
+                }
+                return;
+              }
+              // Torrent stream failed (reaped/404 mid-play etc.) — offer retry
+              setWarmError('Stream interrupted.');
+              setPhase('warming');
+              warmStartedAt.current = Date.now();
+              const gen = generation.current;
+              setInfo((i) => ({ ...i, src: null }));
+              setTimeout(() => { if (generation.current === gen) retryWarmup(); }, 800);
+            }}
             onTimeUpdate={() => {
               const v = videoRef.current;
               if (!v) return;
@@ -382,6 +630,7 @@ export default function PlayerPage() {
               if (now - lastTimePush.current > 500 || Math.abs(v.currentTime - curTime) > 1) {
                 lastTimePush.current = now;
                 setCurTime(v.currentTime);
+                curTimeRef.current = v.currentTime;
               }
               try {
                 if (v.buffered.length) setBufferedEnd(v.buffered.end(v.buffered.length - 1));
@@ -399,6 +648,8 @@ export default function PlayerPage() {
               <track key={t.id} kind="subtitles" label={t.label} src={t.url} default={i === 0 && activeTrack === 0} />
             ))}
           </video>
+        ) : (
+          <div style={{ width: '100%', height: '100%' }} />
         )}
 
         {/* Center flash icon */}
@@ -408,20 +659,41 @@ export default function PlayerPage() {
           </div>
         )}
 
-        {buffering && !loading && (
+        {/* Warmup gate overlay — "load the starting 1 minute, then play" */}
+        {warming && !loading && (
+          <div className="warm-overlay" onClick={(e) => e.stopPropagation()}>
+            <div className="warm-card">
+              <div className="spinner" />
+              <div className="warm-title">{info.title}</div>
+              <div className="warm-line">{warmLine || 'Preparing stream…'}</div>
+              {warm?.containerPlayable === false && (
+                <div className="warm-warn">⚠ This file is {warm.fileName?.split('.').pop()?.toUpperCase()} — browsers may not decode it (MKV/HEVC). If it stays black, use an MP4/H.264 source.</div>
+              )}
+              <div className="warm-actions">
+                {warmError && (
+                  <button className="btn btn-primary btn-sm" onClick={retryWarmup}>
+                    <RotateCw size={14} /> Retry now
+                  </button>
+                )}
+                <button className="btn btn-dark btn-sm" onClick={goBack}>Back</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {buffering && !loading && !warming && (
           <div className="buffer-overlay" onClick={(e) => e.stopPropagation()}>
             <div className="spinner" />
           </div>
         )}
 
-        {resumePos != null && (
+        {resumeNote != null && !warming && (
           <div className="resume-toast" onClick={(e) => e.stopPropagation()}>
-            <span>Resume from {formatTime(resumePos)}?</span>
-            <button className="btn btn-primary btn-sm"
-              onClick={() => { if (videoRef.current) { videoRef.current.currentTime = resumePos; videoRef.current.play(); } setResumePos(null); }}>
-              Resume
+            <span>Resumed from {formatTime(resumeNote)}</span>
+            <button className="btn btn-dark btn-sm"
+              onClick={() => { performSeek(0.01); setResumeNote(null); }}>
+              Start over
             </button>
-            <button className="btn btn-dark btn-sm" onClick={() => setResumePos(null)}>Start over</button>
           </div>
         )}
 
@@ -458,7 +730,7 @@ export default function PlayerPage() {
         )}
 
         {/* Custom bottom control bar (desktop/Android) */}
-        {!loading && !isIos && (
+        {!loading && !isIos && !warming && info.src && (
           <div className={`player-controls ${uiVisible ? '' : 'hidden'}`} onClick={(e) => e.stopPropagation()}>
             <div
               ref={scrubRef}

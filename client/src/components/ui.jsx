@@ -19,7 +19,12 @@ export function PosterImage({ src, alt, className }) {
 // ---------- Badge ----------
 export function ReadyBadge({ state }) {
   if (!state) return null;
-  const label = state === 'ready' ? 'Ready' : state === 'warming' ? 'Warming up' : state === 'stored' ? 'Stored' : 'Connecting';
+  const label = state === 'ready' ? 'Ready'
+    : state === 'warming' ? 'Warming up'
+    : state === 'stored' ? 'Stored'
+    : state === 'sleeping' ? 'Sleeping'
+    : state === 'loading' ? 'Loading'
+    : 'Connecting';
   return (
     <span className={`badge-dot ${state}`}>
       <span className="pulse" />

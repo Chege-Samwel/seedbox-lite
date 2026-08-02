@@ -198,6 +198,30 @@ function destroyTorrentEverywhere(infoHash) {
 const governor = windowGovernor.create(client, destroyTorrentEverywhere);
 app.locals.governor = governor;
 
+// Deduplicate concurrent loads: user habits (double-click, exit & re-enter,
+// home re-render + player open) otherwise spawn parallel client.add() calls
+// for the same hash — three 60s timeouts, duplicate warmups, and a whole-file
+// file.select() from the timeout fallback (this was the field OOM path).
+const loadingPromises = new Map(); // infoHash → Promise<torrent>
+const isLoadingHash = (hash) => hash && loadingPromises.has(String(hash).toLowerCase());
+
+function hashFromId(torrentId) {
+  if (!torrentId) return null;
+  const m = String(torrentId).match(/xt=urn:btih:([a-zA-Z0-9]{32,40})/i);
+  if (m) return m[1].toLowerCase();
+  if (/^[a-fA-F0-9]{40}$/.test(torrentId)) return torrentId.toLowerCase();
+  return null;
+}
+
+// Warmup orchestrator: "1 minute ready" buffering, started on Play click and
+// re-centered on seek — never on add (adding several magnets stays cheap).
+const warmupOrchestrator = require('./lib/warmup').create({
+  client,
+  governor,
+  isLoading: isLoadingHash,
+});
+app.locals.warmup = warmupOrchestrator;
+
 // IMDB Integration
 const imdbCache = new Map();
 
@@ -604,33 +628,29 @@ const universalTorrentResolver = async (identifier) => {
     })();
 
     // Race the resolution against the timeout
-    return await Promise.race([resolutionPromise, timeoutPromise]);
+    const found = await Promise.race([resolutionPromise, timeoutPromise]);
+    if (found) return found;
+
+    // If a load for this hash is already in flight, await it instead of
+    // telling the caller "not found" (prevents the "stuck at connecting"
+    // state after the governor reaps + the user immediately returns).
+    const inflight = loadingPromises.get(String(identifier).toLowerCase());
+    if (inflight) {
+      try { return await inflight; } catch (_) { return null; }
+    }
+    return null;
   } catch (error) {
     console.error(`⚠️ Resolver error: ${error.message}`);
     return null;
   } finally {
     clearTimeout(resolverTimeout);
   }
-  
-  // Strategy 6: If identifier looks like a torrent ID/magnet, try loading it
-  if (identifier.startsWith('magnet:') || identifier.startsWith('http') || identifier.length === 40) {
-    console.log(`🔄 Attempting to load as new torrent: ${identifier}`);
-    try {
-      const torrent = await loadTorrentFromId(identifier);
-      return torrent;
-    } catch (error) {
-      console.error(`❌ Failed to load as new torrent:`, error.message);
-    }
-  }
-  
-  console.log(`❌ Universal resolver exhausted all strategies for: ${identifier}`);
-  return null;
 };
 
-// ENHANCED TORRENT LOADER
-const loadTorrentFromId = (torrentId) => {
+// ENHANCED TORRENT LOADER (deduped — see wrapper below)
+const loadTorrentFromIdImpl = (torrentId) => {
   return new Promise((resolve, reject) => {
-    console.log(`🔄 Loading torrent: ${torrentId}`);
+    console.log(`🔄 Loading torrent: ${String(torrentId).slice(0, 120)}`);
     
     // If it's just a hash, construct a basic magnet link with reliable trackers
     let magnetUri = torrentId;
@@ -640,26 +660,38 @@ const loadTorrentFromId = (torrentId) => {
     }
     
     let torrent;
-    
+
+    // Trackers from the magnet itself (`tr=` params) — the user pasted that
+    // magnet for a reason. WebTorrent's opts.announce REPLACES them, so we
+    // merge explicitly: magnet trackers first, our reliable defaults after.
+    const magnetTrackers = [];
+    const trRe = /[?&]tr=([^&]+)/gi;
+    let trM;
+    while ((trM = trRe.exec(magnetUri)) !== null) {
+      try { magnetTrackers.push(decodeURIComponent(trM[1].replace(/\+/g, ' '))); } catch (_) { /* fine */ }
+    }
+    const DEFAULT_TRACKERS = [
+      'udp://tracker.opentrackr.org:1337/announce',
+      'udp://open.demonii.com:1337/announce',
+      'udp://tracker.openbittorrent.com:6969/announce',
+      'udp://exodus.desync.com:6969/announce',
+      'udp://tracker.torrent.eu.org:451/announce',
+      'udp://tracker.tiny-vps.com:6969/announce',
+      'udp://retracker.lanta-net.ru:2710/announce',
+      'udp://9.rarbg.to:2710/announce',
+      'udp://explodie.org:6969/announce',
+      'udp://tracker.coppersurfer.tk:6969/announce',
+      'wss://tracker.btorrent.xyz', // WebSocket tracker
+      'wss://tracker.webtorrent.io', // WebSocket tracker
+      'wss://tracker.openwebtorrent.com' // WebSocket tracker
+    ];
+    const mergedTrackers = [...new Set([...magnetTrackers, ...DEFAULT_TRACKERS])];
+
     try {
       const torrentOptions = {
-        announce: [
-          'udp://tracker.opentrackr.org:1337/announce',
-          'udp://open.demonii.com:1337/announce',
-          'udp://tracker.openbittorrent.com:6969/announce',
-          'udp://exodus.desync.com:6969/announce',
-          'udp://tracker.torrent.eu.org:451/announce',
-          'udp://tracker.tiny-vps.com:6969/announce',
-          'udp://retracker.lanta-net.ru:2710/announce',
-          'udp://9.rarbg.to:2710/announce',
-          'udp://explodie.org:6969/announce',
-          'udp://tracker.coppersurfer.tk:6969/announce',
-          'wss://tracker.btorrent.xyz', // WebSocket tracker
-          'wss://tracker.webtorrent.io', // WebSocket tracker
-          'wss://tracker.openwebtorrent.com' // WebSocket tracker
-        ],
+        announce: mergedTrackers,
         private: false,
-        strategy: 'rarest', // Download rarest pieces first for faster startup
+        strategy: 'sequential', // streaming-friendly; selections own the real priority
         maxWebConns: 30,    // More web seed connections
         path: './downloads', // Ensure consistent download location
         // ROLLING DISK STORE: pieces live on disk in a capped rolling window,
@@ -725,51 +757,45 @@ const loadTorrentFromId = (torrentId) => {
       nameToHash[torrent.name] = torrent.infoHash;
       
       torrent.addedAt = new Date().toISOString();
-      
+      torrent.addedTime = Date.now(); // numeric — governor idle math needs this
+      governor.touchHash(torrent.infoHash);
+
       // Balanced upload limit for peer reciprocity (required for downloads)
       torrent.uploadLimit = 5000; // 5KB/s - enough for good peer reciprocity
-      
-      // Stop seeding when download is complete
+
+      // Stop seeding when download is complete. NB: webtorrent@1.9.7 fires
+      // 'done' whenever there are ZERO selections — i.e. right after ready —
+      // so only honor it when the torrent is actually downloaded.
       torrent.on('done', () => {
+        if ((torrent.progress || 0) < 0.999) return;
         console.log(`✅ Download complete for ${torrent.name} - Stopping seeding`);
         torrent.uploadLimit = 0; // Disable uploading once download is complete
       });
-      
-      // Enhanced configuration for streaming with better buffering
-      torrent.files.forEach((file, index) => {
+
+      // File policy: webtorrent@1.9.7 auto-selects the ENTIRE torrent at
+      // priority 0 on metadata ("start off selecting the entire torrent with
+      // low priority"). That is exactly the download-everything-on-add
+      // behavior we must not have — remove it VERBATIM (its deselect only
+      // matches exact {from,to,priority}), then select only subtitles.
+      // All payload buffering is driven by the warmup orchestrator (Play
+      // click / seek) and the governor's sliding window while streaming.
+      if (torrent.pieces?.length) {
+        try { torrent.deselect(0, torrent.pieces.length - 1, 0); } catch (_) { /* fine */ }
+      }
+      torrent.files.forEach((file) => {
         const ext = file.name.toLowerCase().split('.').pop();
         const isSubtitle = ['srt', 'vtt', 'ass', 'ssa', 'sub', 'sbv'].includes(ext);
-        const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v'].includes(ext);
-        
         if (isSubtitle) {
-          // Select subtitle files with high priority
           file.select();
           console.log(`📝 Subtitle file prioritized: ${file.name}`);
-        } else if (isVideo) {
-          // Standard video streaming optimization with moderate piece selection
-          file.select();
-          
-          // Create a modest buffer only at the start to improve initial loading
-          const INITIAL_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB at the start
-          
-          // Only prime the first part of the file for better streaming startup
-          // This avoids creating too many streams that can block API responses
-          const initialStream = file.createReadStream({ start: 0, end: INITIAL_BUFFER_SIZE });
-          initialStream.on('error', () => {}); // Ignore errors on this priming stream
-          
-          console.log(`🎬 Video file optimized for streaming: ${file.name}`);
-        } else {
-          // Only select video and subtitle files to avoid wasting bandwidth
-          file.deselect();
-          console.log(`⏭️  Skipping: ${file.name}`);
         }
       });
-      
+
       resolve(torrent);
     });
-    
+
     torrent.on('metadata', () => {
-      console.log(`📋 Metadata received for: ${torrent.name || 'Unknown'}`);
+      governor.touchHash(torrent.infoHash);
     });
     
     torrent.on('error', (error) => {
@@ -789,7 +815,7 @@ const loadTorrentFromId = (torrentId) => {
         const clientTorrent = client.torrents.find(t => t.infoHash === torrent.infoHash);
         if (clientTorrent) {
           console.log(`🔍 Found torrent in client after timeout: ${clientTorrent.name || clientTorrent.infoHash}`);
-          
+
           // Store in tracking systems even if metadata isn't fully ready
           torrents[clientTorrent.infoHash] = clientTorrent;
           torrentIds[clientTorrent.infoHash] = torrentId;
@@ -798,21 +824,14 @@ const loadTorrentFromId = (torrentId) => {
           if (clientTorrent.name) {
             nameToHash[clientTorrent.name] = clientTorrent.infoHash;
           }
-          
+
           clientTorrent.addedAt = new Date().toISOString();
+          clientTorrent.addedTime = Date.now();
           clientTorrent.uploadLimit = 5000; // Moderate upload for peer reciprocity (5KB/s)
-          
-          // Try to optimize any video files even if metadata is incomplete
-          if (clientTorrent.files && clientTorrent.files.length) {
-            clientTorrent.files.forEach(file => {
-              const ext = file.name.toLowerCase().split('.').pop();
-              if (['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v'].includes(ext)) {
-                file.select();
-                file.critical = true;
-              }
-            });
-          }
-          
+          governor.touchHash(clientTorrent.infoHash);
+          // NOTE: no file.select() here — the old fallback selected every
+          // video WHOLLY and was the hidden multi-GB memory path.
+
           resolve(clientTorrent);
         } else {
           console.log(`🔍 Client has ${client.torrents.length} torrents total`);
@@ -821,6 +840,31 @@ const loadTorrentFromId = (torrentId) => {
       }
     }, 60000); // Extended timeout to 60 seconds
   });
+};
+
+/**
+ * Public loader: one in-flight load per info hash, forever. Double-clicks,
+ * exit-and-reopen, and home+player racing all share the same Promise — so
+ * there is exactly one client.add(), one 60s timeout, one resolution path.
+ */
+const loadTorrentFromId = (torrentId) => {
+  const hash = hashFromId(torrentId);
+  if (hash) {
+    // Already fully loaded? Resolve instantly.
+    const existing = torrents[hash] || client.torrents.find((t) => t.infoHash === hash);
+    if (existing && existing.ready) {
+      governor.touchHash(hash);
+      return Promise.resolve(existing);
+    }
+    const inflight = loadingPromises.get(hash);
+    if (inflight) return inflight;
+  }
+  const promise = loadTorrentFromIdImpl(torrentId);
+  const key = hash || `id:${String(torrentId).slice(0, 64)}`;
+  loadingPromises.set(key, promise);
+  const settle = () => loadingPromises.delete(key);
+  promise.then(settle, settle);
+  return promise;
 };
 
 // Add a cache cleanup mechanism to prevent memory bloat
@@ -1170,6 +1214,7 @@ app.locals.wt = {
   client,
   resolve: universalTorrentResolver,
   load: loadTorrentFromId,
+  isLoading: isLoadingHash,
 };
 require('./routes/features')(app);
 
@@ -1542,7 +1587,11 @@ app.get('/api/torrents/:identifier', async (req, res) => {
         progress: file.progress || 0
       }));
 
-    const response = { 
+    // Title auto-derived from the actual file names (for season packs this is
+    // the shared "similar part" across episode files = the show name)
+    const derived = require('./lib/metadataService').deriveFromFiles(torrent.files || []);
+
+    const response = {
       torrent: {
         infoHash: torrent.infoHash,
         name: torrent.name,
@@ -1555,7 +1604,8 @@ app.get('/api/torrents/:identifier', async (req, res) => {
         peers: torrent.numPeers || 0,
         files: torrent.files?.length || 0,
         addedAt: torrent.addedAt || new Date().toISOString()
-      }, 
+      },
+      derived, // { title, isSeries, episodes: [{ fileIndex, name, season, episode }] }
       files,
       filesTotal: torrent.files?.length || 0,
       filesShown: files.length
@@ -1956,10 +2006,17 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       // Create the stream with robust error handling
       try {
         const stream = file.createReadStream({ start, end });
-        
-        // Handle stream events properly
+
+        // Handle stream events properly. NOTE: "closed prematurely" happens on
+        // EVERY seek/aborted range request (the browser cancels the old
+        // request) — that's normal playback, so don't scream about it.
         stream.on('error', (err) => {
-          console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
+          const benign = /premature|aborted|ECONNRESET|EPIPE|cancel/i.test(err.message || '');
+          if (benign) {
+            if (debugLevel) console.log(`🔇 [${streamRequestId}] Stream aborted by client:`, err.message);
+          } else {
+            console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
+          }
           if (!res.headersSent && !res.writableEnded) {
             res.status(500).end();
           }
@@ -1995,7 +2052,9 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       try {
         const stream = file.createReadStream();
         stream.on('error', (err) => {
-          console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
+          if (!/premature|aborted|ECONNRESET|EPIPE|cancel/i.test(err.message || '')) {
+            console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
+          }
           if (!res.writableEnded) res.end();
         });
         

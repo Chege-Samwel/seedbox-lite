@@ -52,25 +52,40 @@ export const setCachedUser = (u) => {
   if (u) (getConsent() === 'granted' ? localStorage : sessionStorage).setItem('sb_user', JSON.stringify(u));
 };
 
-async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000 } = {}) {
+async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000, retries = 0 } = {}) {
   const headers = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  const res = await fetchWithTimeout(
-    `${API_BASE}${path}`,
-    { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
-    timeoutMs
-  );
-  let data = null;
-  try { data = await res.json(); } catch { data = null; }
-  if (!res.ok) {
-    const err = new Error(data?.error || data?.message || `Request failed (${res.status})`);
-    err.status = res.status;
-    err.data = data;
-    throw err;
+  let attempt = 0;
+  for (;;) {
+    try {
+      const res = await fetchWithTimeout(
+        `${API_BASE}${path}`,
+        { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
+        timeoutMs
+      );
+      let data = null;
+      try { data = await res.json(); } catch { data = null; }
+      if (!res.ok) {
+        const err = new Error(data?.error || data?.message || `Request failed (${res.status})`);
+        err.status = res.status;
+        err.data = data;
+        throw err;
+      }
+      return data;
+    } catch (err) {
+      // Retry idempotent GETs once or twice: a busy server (torrent engine
+      // warming up) can otherwise leave the archive UI dead until reload.
+      const transient = !err.status || err.status >= 500;
+      if (method === 'GET' && transient && attempt < retries) {
+        attempt++;
+        await new Promise((r) => setTimeout(r, 1200 * attempt));
+        continue;
+      }
+      throw err;
+    }
   }
-  return data;
 }
 
 // ---------- Auth ----------
@@ -95,10 +110,10 @@ export async function adminApi(path, adminKey, { method = 'GET', body } = {}) {
 }
 
 // ---------- Browse (Internet Archive) ----------
-export const getHome = () => apiFetch('/api/browse/home', { timeoutMs: 25000 });
+export const getHome = () => apiFetch('/api/browse/home', { timeoutMs: 25000, retries: 2 });
 export const searchArchive = (q, page = 1) =>
-  apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000 });
-export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000 });
+  apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000, retries: 1 });
+export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });
 export const getSubtitleProxyUrl = (identifier, file) =>
   `${API_BASE}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}`;
 
@@ -135,6 +150,26 @@ export const setEpisodeWatched = (payload) => apiFetch('/api/me/shows/watched', 
 
 // ---------- Torrent streams (legacy engine) ----------
 export const getTorrentDetails = (infoHash) => apiFetch(`/api/torrents/${infoHash}`, { timeoutMs: 10000 });
+
+// Warmup: starts on Play click, re-centers on "go to time". The server loads
+// the magnet if the torrent is missing (quit/restart/reap) and buffers ~1
+// minute from the requested position before reporting `ready`.
+export const startWarmup = (infoHash, { magnet, fileIdx, positionSecs, durationSecs, windowSecs } = {}) =>
+  apiFetch(`/api/torrents/${infoHash}/warmup`, {
+    method: 'POST',
+    body: { magnet, fileIdx, positionSecs, durationSecs, windowSecs },
+    timeoutMs: 15000,
+  });
+export const getWarmupStatus = (infoHash, { fileIdx, positionSecs, durationSecs, windowSecs } = {}) => {
+  const q = new URLSearchParams();
+  if (fileIdx != null) q.set('fileIdx', String(fileIdx));
+  if (positionSecs != null) q.set('positionSecs', String(positionSecs));
+  if (durationSecs != null) q.set('durationSecs', String(durationSecs));
+  if (windowSecs != null) q.set('windowSecs', String(windowSecs));
+  const qs = q.toString();
+  return apiFetch(`/api/torrents/${infoHash}/warmup${qs ? `?${qs}` : ''}`, { timeoutMs: 12000 });
+};
+
 export const getTorrentStreamUrl = (infoHash, fileIndex) =>
   `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
 export const getTorrentSubtitleUrl = (infoHash, fileIndex) =>

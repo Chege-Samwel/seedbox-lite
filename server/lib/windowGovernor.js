@@ -46,7 +46,33 @@ function create(client, destroyTorrent) {
   // The latest entry is the active window; older ones are retained seek
   // regions that expire LAST_REGION_KEEP_MIN after the seek happened.
   const selected = new Map(); // `${hash}:${fileIdx}` → ranges[]
+  // Liveness NOT tied to HTTP streams: loading, warmup, status polling and
+  // heartbeats all call touch(hash). Without this the janitor treated any
+  // torrent without an active stream as "idle since epoch" and reaped it
+  // seconds after warmup started (the load → warm → reap loop of doom).
+  const activity = new Map(); // hash → ms timestamp
   let shedNoticeShown = false;
+
+  function touchActivity(hash) {
+    if (!hash) return;
+    activity.set(String(hash).toLowerCase(), Date.now());
+  }
+
+  /** Combined last-seen for a torrent: streams, explicit touches, add time. */
+  function lastActivity(hash) {
+    const h = String(hash).toLowerCase();
+    let t = activity.get(h) || 0;
+    for (const s of streams.values()) {
+      if (s.hash === h && s.lastSeen > t) t = s.lastSeen;
+    }
+    if (!t) {
+      const torrent = client.torrents.find((x) => x.infoHash === h);
+      // NB: only trust NUMERIC timestamps — the legacy code set an ISO string
+      // here, which made Math.max() produce NaN and reaping misbehave.
+      if (torrent && typeof torrent.addedTime === 'number') t = torrent.addedTime;
+    }
+    return t;
+  }
 
   function registerStream(hash, fileIdx, fileLen) {
     // One live stream per (hash, fileIdx): browsers fire many range requests
@@ -124,20 +150,11 @@ function create(client, destroyTorrent) {
     return { back: FALLBACK_BACK_BYTES, ahead: FALLBACK_AHEAD_BYTES };
   }
 
-  /** Subtract covered ranges [s,e] from a range. Returns remaining intervals. */
-  function subtractRange(range, covers) {
-    let remaining = [range];
-    for (const c of covers) {
-      const next = [];
-      for (const r of remaining) {
-        if (c.e < r.s || c.s > r.e) { next.push(r); continue; }
-        if (c.s > r.s) next.push({ s: r.s, e: c.s - 1 });
-        if (c.e < r.e) next.push({ s: c.e + 1, e: r.e });
-      }
-      remaining = next;
-    }
-    return remaining;
-  }
+  // webtorrent 1.9.7 deselect() removes only an EXACT {from,to,priority}
+  // match — so ranges are tracked verbatim with a stable priority and are
+  // deselected exactly as they were selected. Partial-subtract deselects are
+  // no-ops in this webtorrent version (that bug made windows stretch forever).
+  const SELECT_PRIORITY = 1;
 
   /** Focus the swarm on [bytePos - back, bytePos + ahead] for this stream's file. */
   function applyWindow(s) {
@@ -161,37 +178,43 @@ function create(client, destroyTorrent) {
     const now = Date.now();
     const prev = selected.get(key) || [];
 
-    // Expire old retained regions
-    const kept = prev.filter((r) => r.expiresAt == null || r.expiresAt > now);
+    // Expire old retained regions; drop their selections verbatim
+    const kept = [];
+    for (const r of prev) {
+      if (r.expiresAt == null || r.expiresAt > now) {
+        kept.push(r);
+      } else {
+        try { torrent.deselect(r.s, r.e, SELECT_PRIORITY); } catch (_) {}
+      }
+    }
 
-    // The active window SLIDES with the playhead: never union-merge, or the
-    // selection stretches unbounded during normal playback and the swarm
-    // wastes bandwidth re-keeping old minutes instead of fetching ahead.
+    // The active window SLIDES with the playhead (never union-merge).
     const activeIdx = kept.findIndex((r) => r.expiresAt == null);
     const others = kept.filter((_, i) => i !== activeIdx); // retained leftovers
     const active = { s: startPiece, e: endPiece, expiresAt: null };
-    let nextRanges = [active, ...others];
+    const nextRanges = [active, ...others];
 
     if (activeIdx >= 0) {
       const oldActive = kept[activeIdx];
+      const identical = oldActive.s === startPiece && oldActive.e === endPiece;
       const disconnected = oldActive.e < startPiece - 2 || oldActive.s > endPiece + 2;
       if (disconnected) {
-        // A real seek: keep the old region for LAST_REGION_KEEP_MIN, then drop
+        // A real seek: keep the OLD region selectable for LAST_REGION_KEEP_MIN
+        // (smooth back-seek), as an expiring retained copy. It stays selected
+        // as-is — no select/deselect calls needed.
         nextRanges.push({ ...oldActive, expiresAt: now + KEEP_MIN * 60 * 1000 });
+      } else if (!identical) {
+        // Slid but still overlapping/adjacent: the old window is superseded —
+        // drop its selection verbatim.
+        try { torrent.deselect(oldActive.s, oldActive.e, SELECT_PRIORITY); } catch (_) {}
       }
-      // Otherwise the old window is fully superseded — deselect everything
-      // outside the new window below (this is the sliding behavior).
     }
 
-    // Deselect pieces that are no longer covered by any active/retained range
-    for (const old of prev) {
-      for (const r of subtractRange(old, nextRanges)) {
-        try { torrent.deselect(r.s, r.e, false); } catch (_) {}
-      }
-    }
-    // Select the union going forward
+    // Select ranges that aren't already selected verbatim
     for (const r of nextRanges) {
-      try { torrent.select(r.s, r.e, 1); } catch (_) {}
+      const already = prev.some((p) => p.s === r.s && p.e === r.e);
+      if (already) continue;
+      try { torrent.select(r.s, r.e, SELECT_PRIORITY); } catch (_) {}
     }
     selected.set(key, nextRanges);
 
@@ -208,29 +231,49 @@ function create(client, destroyTorrent) {
 
     // 1) Refresh windows for live streams; expire retained regions
     const liveByTorrent = new Map();
+    const liveKeys = new Set();
     for (const [id, s] of streams) {
       const stale = s.endedAt != null && now - s.endedAt > KEEP_MIN * 60 * 1000;
       const dead = now - s.lastSeen > Math.max(10 * 60 * 1000, KEEP_MIN * 60 * 1000);
       if (stale || dead) { streams.delete(id); continue; }
+      liveKeys.add(`${s.hash}:${s.fileIdx}`);
       if (s.endedAt == null) {
         applyWindow(s); // keep the window glued to the playhead
         liveByTorrent.set(s.hash, (liveByTorrent.get(s.hash) || 0) + 1);
       }
     }
 
-    // 2) Reap idle torrents (no live streams for the TTL)
+    // 1b) Deselect windows whose streams are gone (kept alive above during
+    // the KEEP retention window; once the record is stale, drop everything —
+    // verbatim, per webtorrent's exact-match deselect).
+    for (const [key, ranges] of [...selected]) {
+      if (liveKeys.has(key)) continue;
+      const torrent = client.torrents.find((t) => t.infoHash === key.split(':')[0]);
+      if (torrent) {
+        for (const r of ranges) {
+          try { torrent.deselect(r.s, r.e, SELECT_PRIORITY); } catch (_) {}
+        }
+      }
+      selected.delete(key);
+    }
+
+    // 2) Reap idle torrents (no live streams and no warmup/loading activity
+    // for the full TTL)
     for (const torrent of [...client.torrents]) {
       const infoHash = torrent.infoHash;
+      if (!infoHash) continue;
       if ((liveByTorrent.get(infoHash) || 0) > 0) continue;
-      // Was anything ever streamed / recently queued?
-      let lastTouch = 0;
-      for (const s of streams.values()) {
-        if (s.hash === infoHash && s.lastSeen > lastTouch) lastTouch = s.lastSeen;
+      const last = lastActivity(infoHash);
+      if (!last) {
+        // First time the janitor sees this torrent — grant a full TTL of
+        // grace instead of instantly condemning it (epoch math bug).
+        activity.set(infoHash.toLowerCase(), now);
+        continue;
       }
-      const lastActivity = Math.max(lastTouch, torrent.addedTime || 0);
-      if (now - lastActivity > IDLE_TTL_MS) {
+      if (now - last > IDLE_TTL_MS) {
         console.log(`🧹 Governor: reaping idle torrent ${torrent.name || infoHash}`);
         releaseWindows(infoHash);
+        activity.delete(infoHash.toLowerCase());
         destroyTorrent(infoHash);
       }
     }
@@ -242,11 +285,12 @@ function create(client, destroyTorrent) {
       console.warn(`🚨 Governor: disk store ${(disk.rootBytes / 1048576).toFixed(0)}MB exceeded cap ${(disk.diskCapBytes / 1048576).toFixed(0)}MB`);
       const candidates = [...client.torrents]
         .filter((t) => (liveByTorrent.get(t.infoHash) || 0) === 0)
-        .sort((a, b) => latestTouch(a.infoHash) - latestTouch(b.infoHash));
+        .sort((a, b) => lastActivity(a.infoHash) - lastActivity(b.infoHash));
       const victim = candidates[0];
       if (victim) {
         console.warn(`🚨 Governor: shedding "${victim.name || victim.infoHash}" to reclaim disk`);
         releaseWindows(victim.infoHash);
+        activity.delete(String(victim.infoHash).toLowerCase());
         destroyTorrent(victim.infoHash);
       }
     }
@@ -254,14 +298,12 @@ function create(client, destroyTorrent) {
       // Shed the least-recently-touched torrent that has no live streams
       const candidates = [...client.torrents]
         .filter((t) => (liveByTorrent.get(t.infoHash) || 0) === 0)
-        .sort((a, b) => {
-          const la = latestTouch(a.infoHash); const lb = latestTouch(b.infoHash);
-          return la - lb;
-        });
+        .sort((a, b) => lastActivity(a.infoHash) - lastActivity(b.infoHash));
       const victim = candidates[0];
       if (victim) {
         console.warn(`🚨 Governor: RSS ${Math.round(rssMB)}MB > ${MAX_RSS_MB}MB — shedding "${victim.name || victim.infoHash}"`);
         releaseWindows(victim.infoHash);
+        activity.delete(String(victim.infoHash).toLowerCase());
         destroyTorrent(victim.infoHash);
       } else if (!shedNoticeShown) {
         shedNoticeShown = true;
@@ -270,12 +312,6 @@ function create(client, destroyTorrent) {
     } else {
       shedNoticeShown = false;
     }
-  }
-
-  function latestTouch(hash) {
-    let t = 0;
-    for (const s of streams.values()) if (s.hash === hash && s.lastSeen > t) t = s.lastSeen;
-    return t || 0;
   }
 
   function releaseWindows(hash) {
@@ -287,7 +323,11 @@ function create(client, destroyTorrent) {
 
   console.log(`🪟 Memory governor active — window: -${BACK_MIN}m / +${AHEAD_MIN}m · retain last region ${KEEP_MIN}m · idle reap ${Math.round(IDLE_TTL_MS / 60000)}m · RSS cap ${MAX_RSS_MB}MB`);
 
-  return { registerStream, notePosition, heartbeat, heartbeatByFile, endStream, touch, windowBytes };
+  return { registerStream, notePosition, heartbeat, heartbeatByFile, endStream, touch: (id) => {
+    // streamId touch (kept for backward compatibility)
+    const s = streams.get(id);
+    if (s) s.lastSeen = Date.now();
+  }, touchHash: touchActivity, lastActivity, windowBytes };
 }
 
 module.exports = { create };

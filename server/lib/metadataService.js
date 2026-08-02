@@ -315,4 +315,61 @@ async function getShow(nameOrId, seasonNumber = null) {
   }
 }
 
-module.exports = { lookup, getShow, cleanTitle, parseEpisode };
+/**
+ * Derive a human title from a torrent's actual file names — the magnet `dn`
+ * hint is often a noisy release string, so once metadata arrives we read the
+ * real files.
+ *
+ *  - Single video → its cleaned file name.
+ *  - Multiple videos (season pack) → the part they SHARE (longest common
+ *    token prefix; falls back to token intersection) which is the show name,
+ *    e.g. ["The.Wire.S01E01…", "The.Wire.S01E02…"] → "The Wire".
+ *
+ * Returns { title, isSeries, episodes: [{ fileIndex, name, season, episode }] }
+ */
+function deriveFromFiles(files) {
+  const VIDEO_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mkv', '.avi', '.mov'];
+  const vids = (files || [])
+    .map((f, fileIndex) => ({ fileIndex, name: f.name || '' }))
+    .filter((f) => VIDEO_EXTS.some((ext) => f.name.toLowerCase().endsWith(ext)));
+  if (!vids.length) return { title: null, isSeries: false, episodes: [] };
+
+  const base = (n) => n.split('/').pop();
+  const cleaned = vids.map((v) => cleanTitle(base(v.name)).title);
+  const episodes = vids.map((v, i) => ({
+    fileIndex: v.fileIndex,
+    name: base(v.name),
+    ...parseEpisode(v.name),
+    cleanName: cleaned[i],
+  }));
+  const withEp = episodes.filter((e) => e.season != null);
+  const isSeries = vids.length > 1 && withEp.length >= Math.min(2, vids.length);
+
+  let title = null;
+  if (vids.length === 1) {
+    title = cleaned[0];
+  } else {
+    // Longest common TOKEN prefix across all cleaned names
+    const tokenized = cleaned.map((c) => c.split(' ').filter(Boolean));
+    const first = tokenized[0] || [];
+    let prefix = [];
+    for (let i = 0; i < first.length; i++) {
+      const tok = first[i];
+      if (tokenized.every((t) => t[i] && t[i].toLowerCase() === tok.toLowerCase())) prefix.push(tok);
+      else break;
+    }
+    if (prefix.length) {
+      title = prefix.join(' ');
+    } else {
+      // Fallback: tokens present in EVERY name, ordered by the first name
+      const lower = tokenized.map((t) => t.map((x) => x.toLowerCase()));
+      const common = first.filter((tok) => lower.every((t) => t.includes(tok.toLowerCase())));
+      if (common.length >= 2) title = common.join(' ');
+    }
+  }
+  if (!title) title = cleaned[0] || null;
+  // An episode-only title ("Show S02" from cleaning) is still useful
+  return { title, isSeries, episodes };
+}
+
+module.exports = { lookup, getShow, cleanTitle, parseEpisode, deriveFromFiles };

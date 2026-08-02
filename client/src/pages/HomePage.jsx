@@ -1,6 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, Info } from 'lucide-react';
+import { Play, Info, RotateCw } from 'lucide-react';
 import { getHome, getHistory, getLibrary } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
 import { Row, MediaCard, ReadyBadge, Spinner, EmptyState } from '../components/ui';
@@ -11,10 +11,12 @@ export default function HomePage() {
   const [history, setHistory] = useState([]);
   const [library, setLibrary] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reloadTick, setReloadTick] = useState(0);
   const { favorites } = useFavorites();
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     (async () => {
       const [homeRes, histRes, libRes] = await Promise.allSettled([
         getHome(), getHistory(), getLibrary(),
@@ -26,7 +28,9 @@ export default function HomePage() {
       setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadTick]);
+
+  const retry = useCallback(() => setReloadTick((t) => t + 1), []);
 
   const continueWatching = useMemo(
     () => history.filter((h) => h.duration > 0 && h.position > 10 && h.position / h.duration < 0.9).slice(0, 10),
@@ -119,6 +123,13 @@ export default function HomePage() {
           ))}
         </Row>
 
+        {home?.offline && (continueWatching.length > 0 || library.length > 0 || favorites.length > 0) && (
+          <div className="offline-banner">
+            <span>📡 Archive catalog unreachable — your library &amp; history still work.</span>
+            <button className="btn btn-dark btn-sm" onClick={retry}><RotateCw size={13} /> Retry</button>
+          </div>
+        )}
+
         {(home?.rows || []).map((row) => (
           <Row key={row.key} title={row.title} hint="Internet Archive">
             {row.items.map((it) => (
@@ -138,6 +149,11 @@ export default function HomePage() {
             <EmptyState emoji="📡" title="Catalog unreachable">
               The Internet Archive couldn't be reached from the server right now.
               You can still add magnets in the <strong>Pipeline</strong> tab.
+              <div style={{ marginTop: 16 }}>
+                <button className="btn btn-primary" onClick={retry}>
+                  <RotateCw size={16} /> Retry catalog
+                </button>
+              </div>
             </EmptyState>
           </div>
         )}
