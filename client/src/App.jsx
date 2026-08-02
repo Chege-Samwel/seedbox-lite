@@ -1,77 +1,82 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, matchPath } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import Layout from './components/Layout';
-import HomePage from './components/HomePage';
-import TorrentPageNetflix from './components/TorrentPageNetflix';
-import RecentPage from './components/RecentPage';
-import SettingsPage from './components/SettingsPage';
-import CacheManagementPage from './components/CacheManagementPage';
-import SearchSourcesPage from './components/SearchSourcesPage';
-import LoginScreen from './components/LoginScreen';
-import './App.css';
+import { ToastProvider } from './hooks/useToast';
+import NavBar from './components/NavBar';
+import { ConsentBanner, LegalNotice } from './components/ConsentAndLegal';
+import LoginPage from './pages/LoginPage';
+import HomePage from './pages/HomePage';
+import SearchPage from './pages/SearchPage';
+import { ArchiveDetails, ShowDetails } from './pages/DetailsPage';
+import PlayerPage from './pages/PlayerPage';
+import LibraryPage from './pages/LibraryPage';
+import HistoryPage from './pages/HistoryPage';
+import AdminPage from './pages/AdminPage';
+import './styles/stream.css';
 
-const AuthenticatedApp = () => {
-  const { isAuthenticated, isLoading, authenticate } = useAuth();
-
-  // Show loading spinner while checking authentication
-  if (isLoading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        justifyContent: 'center', 
-        alignItems: 'center', 
-        height: '100vh',
-        background: 'linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%)',
-        color: '#ffffff'
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{
-            width: '40px',
-            height: '40px',
-            border: '4px solid rgba(255, 255, 255, 0.2)',
-            borderTop: '4px solid #e50914',
-            borderRadius: '50%',
-            animation: 'spin 1s linear infinite',
-            margin: '0 auto 16px'
-          }}></div>
-          <p>Loading Seedbox...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Show login screen if not authenticated
-  if (!isAuthenticated) {
-    return <LoginScreen onAuthSuccess={authenticate} />;
-  }
-
-  // Show main app if authenticated
+function Splash() {
   return (
-    <Router>
-      <Routes>
-        {/* Full-width Netflix-style page without sidebar */}
-        <Route path="torrent/:torrentHash" element={<TorrentPageNetflix />} />
-        
-        {/* Main app with sidebar layout */}
-        <Route path="/" element={<Layout />}>
-          <Route index element={<HomePage />} />
-          <Route path="recent" element={<RecentPage />} />
-          <Route path="search" element={<SearchSourcesPage />} />
-          <Route path="settings" element={<SettingsPage />} />
-          <Route path="cache" element={<CacheManagementPage />} />
-        </Route>
-      </Routes>
-    </Router>
-  );
-};
-
-function App() {
-  return (
-    <AuthProvider>
-      <AuthenticatedApp />
-    </AuthProvider>
+    <div className="center-wrap" style={{ minHeight: '100dvh' }}>
+      <div className="spinner" />
+      <p>Checking your ticket…</p>
+    </div>
   );
 }
 
-export default App;
+function Protected({ children }) {
+  const { isAuthenticated, isLoading } = useAuth();
+  const location = useLocation();
+  if (isLoading) return <Splash />;
+  if (!isAuthenticated) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  return (
+    <>
+      <LegalNotice />
+      {children}
+    </>
+  );
+}
+
+function Shell({ children }) {
+  const location = useLocation();
+  const isPlayer = matchPath('/watch/*', location.pathname);
+  return (
+    <>
+      {!isPlayer && <NavBar />}
+      {children}
+    </>
+  );
+}
+
+function AppRoutes() {
+  const { isAuthenticated, isLoading } = useAuth();
+  if (isLoading) return <Splash />;
+  return (
+    <Shell>
+      <Routes>
+        <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
+        <Route path="/" element={<Protected><HomePage /></Protected>} />
+        <Route path="/search" element={<Protected><SearchPage /></Protected>} />
+        <Route path="/title/archive/:identifier" element={<Protected><ArchiveDetails /></Protected>} />
+        <Route path="/title/show/:name" element={<Protected><ShowDetails /></Protected>} />
+        <Route path="/watch/:source" element={<Protected><PlayerPage /></Protected>} />
+        <Route path="/library" element={<Protected><LibraryPage /></Protected>} />
+        <Route path="/history" element={<Protected><HistoryPage /></Protected>} />
+        <Route path="/admin" element={<Protected><AdminPage /></Protected>} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Shell>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ToastProvider>
+        <Router>
+          <AppRoutes />
+          <ConsentBanner />
+        </Router>
+      </ToastProvider>
+    </AuthProvider>
+  );
+}

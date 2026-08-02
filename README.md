@@ -23,6 +23,43 @@ Stream Torrents Instantly
 
 SeedBox Lite is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
 
+## 🎟️ Streaming Suite (v2)
+
+A complete, invite-only personal cinema layered on top of the streaming engine:
+
+- **Ticket login system** — users sign in with ticket codes (`SB-XXXX-XXXX`) issued from the **admin panel** (`/admin`). Tickets can be **discontinued or renewed** at any time; sessions are validated on app boot and every request, so a revoked ticket kills access immediately. An owner ticket is generated on first boot and printed to the server console.
+- **Internet Archive catalog (legal)** — browse curated rows (classics, sci-fi, horror, silent era, cartoons, documentaries), search the full public-domain catalog, and stream directly with progressive HTTP playback — no torrent needed for archive content.
+- **Magnet pipeline (in-memory)** — users queue magnets for content **they have the rights to**; the server holds them in WebTorrent memory. **Nothing downloads when a magnet is added** — warm-up fires on the Play click (or any seek): the server buffers ~**1 minute of media from that exact position** and the player starts the moment the ready-gate is filled, with a live ETA/peer readout. Titles are **auto-derived from the real file names** (season packs collapse to the shared show name). Idle items show **Sleeping 💤** — one tap on ▶ wakes them, even after a server restart or an accidental exit, because loads/warmups are fully deduped. Tunable via `WARM_DEFAULT_MB`, `WARM_READY_MIN_MB`, `WARM_WINDOW_KEEP_MIN`.
+- **Picture library** — every pipeline item automatically gets posters/backdrops/overviews from keywords (title, year, SxxExx parsed from filenames) via TMDB (optional key) → TVMaze → iTunes → OMDb fallback chain. Manual re-lookup + alternate-poster picker included.
+- **TV tracking** — full shows with seasons/episodes (stills, airdates, synopses), watched/unwatched toggles per episode, and per-episode magnet attachment that feeds the pipeline.
+- **Watch history** — resume points saved every 5s per user, continue-watching shelves, watched shelf, per-entry and full clear.
+- **Per-user isolation** — every ticket gets its own library, history, and show-tracking workspace on the server.
+- **Cinematic UI** — hero banner, poster/banner carousels, Netflix-style details pages, subtitle menu on the player (archive subtitles via CORS-safe proxy with SRT→VTT conversion, plus local `.srt`/`.vtt` upload), buffering overlay, resume toast, double-tap fullscreen, mobile bottom tab bar.
+- **PWA ready** — installable manifest, icons, standalone display. The Android app is simply this web app wrapped in a WebView (Capacitor/TWA) — no rewrite planned or needed.
+- **Memory governor (anti-OOM)** — a sliding time-window buffer keeps ~**5 min behind / 5 min ahead** of the playhead (exact byte ranges computed from the file's real bitrate once duration is known). After a seek, the previous region is retained **~4 min**, then dropped. Idle torrents are auto-reaped, and a hard RSS cap sheds unstreamed torrents *before* the kernel can kill the process. Tunable via `WINDOW_BACK_MIN`, `WINDOW_AHEAD_MIN`, `LAST_REGION_KEEP_MIN`, `IDLE_TORRENT_TTL_MIN`, `MAX_RSS_MB`.
+- **Custom player controls** — hover-scrubber with time tooltip (and backdrop preview), buffered-amount bar, play/pause flash, volume, keyboard shortcuts (<kbd>space</kbd>/<kbd>←</kbd>/<kbd>→</kbd>/<kbd>f</kbd>/<kbd>m</kbd>), double-tap fullscreen, **picture-in-picture**. The UI auto-hides during playback and **re-appears on any mouse movement** (no click needed). **Go-to-time is warmup-aware**: every seek (scrub, arrows, resume) re-centers the server's 1-minute window on the target, and resume is automatic (with a "Start over" chip). Playback is warmup-gated and self-healing — mid-stream stalls and errors automatically re-warm the torrent instead of dying. Captions work from three sources: Internet Archive files, subtitles **embedded in the torrent** (auto-detected `.srt`/`.vtt`, converted server-side), and local upload — with S/M/L caption sizing.
+- **Rolling disk store (not RAM)** — pieces are written to server disk in a strictly capped rolling window (~10 min of media). The oldest chunks behind the playhead are auto-evicted minute-by-minute as the governor downloads the next minute ahead; only ~3 min of media ever sits in RAM. Torrent removal and server boot wipe all chunks. Configurable: `STORE_DIR`, `STORE_CAP_MB`, `DISK_CAP_MB`.
+- **Consent & persistence** — storage-consent banner: *Accept* keeps the login persistent in the browser for auto-login; *Essential only* keeps everything tab-scoped. History, pipeline, favorites and tickets always persist server-side per ticket, and the pipeline **rehydrates** its magnets after a server restart.
+- **Favorites** — heart anything (archive films, shows, pipeline items); a Favorites row sits on Home, right after Continue Watching.
+- **Quality variants (transcode)** — a Netflix-style quality selector in the player: **Auto / Source / 1080p / 720p / 480p / 360p**, rendered on the fly from one high-quality source by ffmpeg. *Auto* plays the original file when the browser can, and transcodes when it can't — which is also how **MKV/HEVC becomes playable**. Renders are position-aware (`-ss` + absolute timestamps), so **seeks and quality switches keep your clock, scrubber and subtitles aligned**. Laptop-safe by default: `veryfast` preset, 720p recommendation, 2-session cap. Needs `ffmpeg` (`sudo apt install ffmpeg`) or the bundled `ffmpeg-static` fallback; tune via `TRANSCODE_*` env vars.
+- **Legal separation** — first-run legal notice (acknowledgment stored) and [`LEGAL.md`](LEGAL.md): the operator ships no content and accepts no liability for what users choose to add.
+
+### 🔌 New API surface
+
+| Area | Endpoints |
+| --- | --- |
+| Auth | `POST /api/auth/login` · `POST /api/auth/logout` · `GET /api/auth/validate` |
+| Admin (`x-admin-key`) | `GET/POST /api/admin/tickets` · `PATCH/DELETE /api/admin/tickets/:id` |
+| Catalog | `GET /api/browse/home` · `GET /api/browse/search?q=` · `GET /api/browse/item/:id` · `GET /api/browse/subtitle` |
+| Pictures/TV | `GET /api/metadata/search?q=` · `GET /api/metadata/show?name=&season=` |
+| Warmup (play-gated) | `POST /api/torrents/:hash/warmup` · `GET /api/torrents/:hash/warmup` |
+| Transcode | `GET /api/transcode/status` · `GET /api/torrents/:hash/files/:idx/transcode?quality=&t=` |
+| Pipeline | `GET/POST /api/me/library` · `PATCH/DELETE /api/me/library/:id` · `POST /api/me/library/:id/artwork` |
+| History | `GET/POST /api/me/history` · `GET/DELETE /api/me/history/:key` · `DELETE /api/me/history` |
+| Tracking | `GET /api/me/shows` · `GET /api/me/shows/:key` · `POST /api/me/shows/watched` |
+
+> **Content policy:** this app does **not** include or support pirate index integrations. It ships with the fully legal Internet Archive catalog and a pipeline for magnets the user is licensed to access. All artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
+
 
 
 ### ✨ Key Highlights
@@ -70,9 +107,41 @@ SeedBox Lite is a cutting-edge torrent streaming platform that allows you to wat
 
 [View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
 
+## 🍃 Small hosts & free tiers (Render/Railway, laptops)
+
+- **`LITE_MODE=true`** — one flag that shrinks every budget (30 conns, ~420 MB RSS
+  cap, max 2 torrents with HTTP 429 + auto-retry for extras, transcode **off**,
+  home-feed cached 30 min). Every knob is individually overridable — see
+  [`.env.example`](.env.example) and **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+- **Honest free-tier answer:** the torrent engine + transcoding cannot run on a
+  512 MB / 0.1 CPU free instance (piece hashing, swarm I/O, ffmpeg ≈ 1 core per
+  720p session). What *can* live there for free is the **frontend**: build
+  `client/dist`, host it as a static site with `VITE_API_BASE_URL` pointing at
+  your home server behind Cloudflare Tunnel/Tailscale — full guide + bandwidth
+  math for 3–5 users in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+- **Player resilience:** a server-side stream timeout now answers `503 +
+  Retry-After`, and the player auto-reconnects in place at the playhead with
+  backoff (never a dead video element), plus a mid-play starve watchdog and
+  honest "dead swarm" stalled reporting (`WARM_STALL_MS`).
+- **Cooler laptop:** run production (`cd client && npm run build && NODE_ENV=production npm start`)
+  instead of the Vite dev server, and use `LITE_MODE=true`.
+
 ## 🚀 Quick Start
 
-### Using Docker (Recommended)
+### Production (one command, one port — recommended for a home server)
+
+```bash
+npm run install-all
+npm start        # builds the client AND serves UI+API together on :3000
+```
+
+- Open **http://localhost:3000** — the UI, API, and streams share one origin (no CORS, no `VITE_API_BASE_URL` needed).
+- The **owner ticket is printed in the server log ONCE, on first boot only**.
+  Lost it or nothing printed? Recovery: **`npm run tickets`** (list codes) ·
+  **`npm run new-ticket`** (create one) · or log in and use **/admin** with your
+  `ADMIN_PASSWORD`. See [DEPLOYMENT.md](DEPLOYMENT.md) for tunnels & free tiers.
+
+### Using Docker
 
 ```bash
 # Clone the repository

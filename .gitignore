@@ -65,3 +65,7 @@ server/.env.production
 
 # Torrents
 downloads
+
+# Feature data (tickets, sessions, user stores, caches)
+server/data/
+

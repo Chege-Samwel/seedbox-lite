@@ -1,83 +1,102 @@
-import React, { createContext, useState, useContext, useEffect, useCallback } from 'react';
+/**
+ * Session auth — the app boots by validating the stored session token against
+ * the server. If the ticket was discontinued or expired on the admin side, the
+ * user lands on the ticket login screen with a precise reason.
+ */
+import React, { createContext, useState, useContext, useEffect, useCallback, useRef } from 'react';
+import { getToken, setToken, setCachedUser, getCachedUser, loginWithTicket, validateSession, logoutSession } from '../services/api';
 
 const AuthContext = createContext();
 
 export const useAuth = () => {
   const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
   return context;
 };
 
-export const AuthProvider = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+// Re-validate the ticket every 5 minutes so admin discontinuations take effect
+// without an app restart.
+const REVALIDATE_MS = 5 * 60 * 1000;
 
-  const clearAuth = useCallback(() => {
-    localStorage.removeItem('seedbox_authenticated');
-    localStorage.removeItem('seedbox_auth_timestamp');
-    setIsAuthenticated(false);
-    console.log('🚪 Authentication cleared');
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
+  const intervalRef = useRef(null);
+
+  const clearAuth = useCallback((message = null) => {
+    setToken(null);
+    setCachedUser(null);
+    setUser(null);
+    if (message) setAuthError(message);
   }, []);
 
-  const checkAuthStatus = useCallback(() => {
+  const checkServer = useCallback(async () => {
+    const token = getToken();
+    if (!token) {
+      setIsLoading(false);
+      return;
+    }
     try {
-      const authStatus = localStorage.getItem('seedbox_authenticated');
-      const authTimestamp = localStorage.getItem('seedbox_auth_timestamp');
-      
-      if (authStatus === 'true' && authTimestamp) {
-        // Check if authentication is still valid (optional: add expiration logic here)
-        const timestamp = parseInt(authTimestamp);
-        const now = Date.now();
-        
-        // Authentication expires after 30 days (optional)
-        const EXPIRY_TIME = 30 * 24 * 60 * 60 * 1000; // 30 days in milliseconds
-        
-        if (now - timestamp < EXPIRY_TIME) {
-          setIsAuthenticated(true);
-          console.log('✅ Found valid authentication in localStorage');
-        } else {
-          // Clear expired authentication
-          clearAuth();
-          console.log('⏰ Authentication expired, cleared localStorage');
-        }
+      const data = await validateSession();
+      setUser(data.user);
+      setCachedUser(data.user);
+      setAuthError(null);
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) {
+        clearAuth(err?.data?.message || 'Your session is no longer valid.');
       } else {
-        console.log('❌ No valid authentication found in localStorage');
+        // Server unreachable — keep the session alive using the cached profile;
+        // every API call still enforces auth once the server is back.
+        const cached = getCachedUser();
+        if (cached) setUser((u) => u || cached);
       }
-    } catch (error) {
-      console.error('Error checking auth status:', error);
-      clearAuth();
     } finally {
       setIsLoading(false);
     }
   }, [clearAuth]);
 
+  // Boot: look for the stored ticket session and validate it
+  useEffect(() => { checkServer(); }, [checkServer]);
+
+  // Periodic re-validation while the app is open
   useEffect(() => {
-    checkAuthStatus();
-  }, [checkAuthStatus]);
+    if (!user) {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      return undefined;
+    }
+    intervalRef.current = setInterval(checkServer, REVALIDATE_MS);
+    return () => clearInterval(intervalRef.current);
+  }, [user, checkServer]);
 
-  const authenticate = () => {
-    setIsAuthenticated(true);
-    console.log('� User authenticated successfully');
-  };
+  const login = useCallback(async (ticketCode) => {
+    setAuthError(null);
+    try {
+      const data = await loginWithTicket(ticketCode.trim());
+      setToken(data.token);
+      setUser(data.user);
+      return { ok: true };
+    } catch (err) {
+      // Distinguish "server said no" (401/403 → wrong/expired ticket) from
+      // "server never heard us" (network/CORS/wrong API base) — the latter
+      // is what a bounced production login usually is, and the message
+      // should say where to look instead of blaming the ticket.
+      const message = err?.data?.error
+        || (!err.status
+          ? 'Cannot reach the server at all. Is it running? If the UI is hosted separately, VITE_API_BASE_URL must point at the server (same-origin via "npm start" needs nothing).'
+          : 'Login failed — check your ticket code.');
+      setAuthError(message);
+      return { ok: false, error: message };
+    }
+  }, []);
 
-  const logout = () => {
+  const logout = useCallback(async () => {
+    await logoutSession();
     clearAuth();
-    // Optionally redirect to login or refresh page
-    window.location.reload();
-  };
-
-  const value = {
-    isAuthenticated,
-    isLoading,
-    authenticate,
-    logout,
-    clearAuth
-  };
+  }, [clearAuth]);
 
   return (
-    <AuthContext.Provider value={value}>
+    <AuthContext.Provider value={{ isAuthenticated: !!user, user, isLoading, authError, login, logout, setAuthError }}>
       {children}
     </AuthContext.Provider>
   );

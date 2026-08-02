@@ -13,5 +13,8 @@
     "express": "4.18.2",
     "multer": "^2.0.2",
     "webtorrent": "^1.9.7"
+  },
+  "optionalDependencies": {
+    "ffmpeg-static": "^5.2.0"
   }
 }

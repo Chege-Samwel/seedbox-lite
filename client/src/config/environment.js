@@ -3,8 +3,14 @@
  * Provides centralized access to environment variables
  */
 
-// Get API base URL from environment variables
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
+// Single source of truth for the API base: services/api (same-origin by
+// default, self-heals when a baked URL is wrong). The old module defaulted
+// to http://localhost:3000 — poison for any page not literally opened on
+// the server machine itself.
+import { apiBase } from '../services/api';
+
+// Get API base URL (dynamic: honors the learned same-origin override)
+const API_BASE_URL = apiBase();
 
 // Remove trailing slash if present
 const normalizeUrl = (url) => url.endsWith('/') ? url.slice(0, -1) : url;
