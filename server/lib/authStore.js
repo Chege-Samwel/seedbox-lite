@@ -212,6 +212,13 @@ function bootstrap() {
     console.log('🎟️  Use this code to log in. Manage tickets in /admin.');
     console.log('════════════════════════════════════════════════════════');
     console.log('');
+  } else {
+    // Codes are secrets — they're printed ONCE (first boot), never again.
+    // But say so out loud, or a production deploy looks "broken" for not
+    // printing anything, with no visible recovery path.
+    const active = data.tickets.filter((t) => ticketStatus(t) === 'active').length;
+    console.log(`🎟️  ${active}/${data.tickets.length} ticket(s) active — codes printed only on FIRST boot for safety.`);
+    console.log('🎟️  Lost the code?  list: npm run tickets   ·   create: npm run new-ticket   ·   manage: /admin (admin key = ADMIN_PASSWORD env)');
   }
 }
 

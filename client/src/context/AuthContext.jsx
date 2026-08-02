@@ -77,7 +77,14 @@ export const AuthProvider = ({ children }) => {
       setUser(data.user);
       return { ok: true };
     } catch (err) {
-      const message = err?.data?.error || 'Login failed — check your ticket code.';
+      // Distinguish "server said no" (401/403 → wrong/expired ticket) from
+      // "server never heard us" (network/CORS/wrong API base) — the latter
+      // is what a bounced production login usually is, and the message
+      // should say where to look instead of blaming the ticket.
+      const message = err?.data?.error
+        || (!err.status
+          ? 'Cannot reach the server at all. Is it running? If the UI is hosted separately, VITE_API_BASE_URL must point at the server (same-origin via "npm start" needs nothing).'
+          : 'Login failed — check your ticket code.');
       setAuthError(message);
       return { ok: false, error: message };
     }

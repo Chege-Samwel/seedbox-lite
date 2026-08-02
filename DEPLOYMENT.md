@@ -54,7 +54,7 @@ Measured and structural reasons:
 2. Deploy `client/dist` as a **static site** (Render Static, Netlify,
    Vercel, GitHub Pages) with env `VITE_API_BASE_URL=https://<your tunnel hostname>`
    (the client already honors it — see `client/src/services/api.js`).
-3. At home: `sudo apt install ffmpeg && npm run install-all && NODE_ENV=production npm start`
+3. At home: `sudo apt install ffmpeg && npm run install-all && npm start` (builds the client and serves UI+API on one port)
 4. Expose port 3000 via [cloudflared tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
    or `tailscale funnel` — no port‑forwarding, TLS included.
 5. Set `FRONTEND_URL=https://your-app.onrender.com` so CORS allows it.

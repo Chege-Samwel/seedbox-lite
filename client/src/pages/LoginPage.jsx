@@ -44,6 +44,14 @@ export default function LoginPage() {
         <p style={{ marginTop: 18, marginBottom: 0, fontSize: 12, textAlign: 'center' }}>
           Tickets can be discontinued or renewed by the administrator at any time.
         </p>
+        <details style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim, #9aa)' }}>
+          <summary style={{ cursor: 'pointer' }}>Server owner? Common mix-ups</summary>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+            <li>This box wants a <strong>ticket code</strong> (<code>SB-XXXX-XXXX</code>) — <em>not</em> the admin key. The admin key (<code>ADMIN_PASSWORD</code>) unlocks <code>/admin</code> <em>after</em> you are signed in.</li>
+            <li>The owner ticket prints in the server log <strong>once, on first boot only</strong>. Lost it? Run <code>npm run tickets</code> on the server (or <code>npm run new-ticket</code>).</li>
+            <li>Blank/bounced logins from another device usually mean the UI was built with a wrong <code>VITE_API_BASE_URL</code> — same-origin serving (<code>npm start</code>) needs nothing configured.</li>
+          </ul>
+        </details>
       </form>
     </div>
   );

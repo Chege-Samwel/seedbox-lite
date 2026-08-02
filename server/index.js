@@ -2377,6 +2377,27 @@ function disableSeedingForCompletedTorrents() {
   return completedCount;
 }
 
+// ── Static client serving (production) ─────────────────────────────────
+// `npm start` builds the client and this same process serves it — one
+// command, one port, one origin (no CORS setup, no VITE_API_BASE_URL).
+// Without this, production mode answered "Cannot GET /" and apps pointed at
+// the server URL bounced around client routes that didn't exist server-side.
+if (isProduction) {
+  const distDir = path.join(__dirname, '..', 'client', 'dist');
+  if (fs.existsSync(path.join(distDir, 'index.html'))) {
+    app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+    // SPA fallback: deep links (/admin, /library, /watch/…) must return the
+    // app shell so the client router can take over; API routes untouched.
+    app.get('*', (req, res, next) => {
+      if (req.path.startsWith('/api/')) return next();
+      res.sendFile(path.join(distDir, 'index.html'));
+    });
+    console.log('🖥️  Production: serving built client (client/dist) from this port');
+  } else {
+    console.log('⚠️  client/dist not found — running API-only. Build the UI: cd client && npm run build (or use: npm start from the repo root)');
+  }
+}
+
 // Start server
 const PORT = config.server.port;
 const HOST = config.server.host;

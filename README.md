@@ -128,7 +128,20 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 ## 🚀 Quick Start
 
-### Using Docker (Recommended)
+### Production (one command, one port — recommended for a home server)
+
+```bash
+npm run install-all
+npm start        # builds the client AND serves UI+API together on :3000
+```
+
+- Open **http://localhost:3000** — the UI, API, and streams share one origin (no CORS, no `VITE_API_BASE_URL` needed).
+- The **owner ticket is printed in the server log ONCE, on first boot only**.
+  Lost it or nothing printed? Recovery: **`npm run tickets`** (list codes) ·
+  **`npm run new-ticket`** (create one) · or log in and use **/admin** with your
+  `ADMIN_PASSWORD`. See [DEPLOYMENT.md](DEPLOYMENT.md) for tunnels & free tiers.
+
+### Using Docker
 
 ```bash
 # Clone the repository

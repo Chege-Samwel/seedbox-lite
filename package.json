@@ -6,7 +6,11 @@
     "dev": "concurrently -n server,client -c green,cyan \"npm run server\" \"npm run client\"",
     "server": "cd server && node index.js",
     "client": "cd client && npm run dev",
-    "install-all": "npm install && cd server && npm install && cd ../client && npm install"
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "build": "cd client && npm run build",
+    "start": "cd client && npm run build && cd ../server && NODE_ENV=production node index.js",
+    "tickets": "cd server && node bin/tickets.js",
+    "new-ticket": "cd server && node bin/tickets.js --new Recovery 365"
   },
   "keywords": ["torrent", "streaming", "webtorrent"],
   "author": "",
