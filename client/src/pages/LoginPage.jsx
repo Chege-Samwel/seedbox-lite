@@ -1,11 +1,36 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Leaf } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { apiBase } from '../services/api';
 
 export default function LoginPage() {
   const { login, authError, setAuthError } = useAuth();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [probe, setProbe] = useState(null); // { host, ok }
+
+  // Live reachability chip: pings the API the login will actually use and
+  // shows WHERE it points — a baked-in placeholder/wrong base (the classic
+  // production trap) becomes immediately visible instead of a vague error.
+  useEffect(() => {
+    let stop = false;
+    const check = async () => {
+      const base = apiBase() || window.location.origin;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 5000);
+        const r = await fetch(`${base}/api/health`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!stop) setProbe({ host: base, ok: r.ok });
+      } catch {
+        if (!stop) setProbe({ host: base, ok: false });
+      }
+    };
+    check();
+    const timer = setInterval(check, 10000);
+    window.addEventListener('sb_api_base_changed', check);
+    return () => { stop = true; clearInterval(timer); window.removeEventListener('sb_api_base_changed', check); };
+  }, []);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -25,6 +50,11 @@ export default function LoginPage() {
         <h1>Enter your ticket</h1>
         <p>Access is by invitation only. Enter the login ticket code you received from the administrator.</p>
         {authError && <div className="error-banner">{authError}</div>}
+        {probe && (
+          <p style={{ margin: '8px 0 0', fontSize: 11.5, textAlign: 'center', color: probe.ok ? '#4caf86' : '#e07a5f' }}>
+            API @ {probe.host} — {probe.ok ? 'reachable ✓' : 'unreachable ✗ (server down, or a wrong baked VITE_API_BASE_URL)'}
+          </p>
+        )}
         <div className="field">
           <input
             className="input ticket-input"

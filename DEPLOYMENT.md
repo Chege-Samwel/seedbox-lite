@@ -52,8 +52,15 @@ Measured and structural reasons:
 
 1. `cd client && npm run build`
 2. Deploy `client/dist` as a **static site** (Render Static, Netlify,
-   Vercel, GitHub Pages) with env `VITE_API_BASE_URL=https://<your tunnel hostname>`
-   (the client already honors it — see `client/src/services/api.js`).
+   Vercel, GitHub Pages) with `VITE_API_BASE_URL=https://<your REAL tunnel hostname>`
+   set in `client/.env.production` **before building** (the client already
+   honors it — see `client/src/services/api.js`).
+   ⚠️ Never ship a template value like `https://seedbox-api.<domain>` —
+   a bad baked URL breaks every API call ("Cannot reach the server" on the
+   login page). The login screen shows a live "API @ … — reachable/unreachable"
+   chip, and the app self-heals by falling back to the origin that served the
+   UI when a baked base is unreachable — but set it right (must be **https**
+   or you'll hit mixed-content blocks on an https page).
 3. At home: `sudo apt install ffmpeg && npm run install-all && npm start` (builds the client and serves UI+API on one port)
 4. Expose port 3000 via [cloudflared tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
    or `tailscale funnel` — no port‑forwarding, TLS included.

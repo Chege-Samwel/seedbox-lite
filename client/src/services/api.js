@@ -3,7 +3,30 @@
  */
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+// ── API base resolution ─────────────────────────────────────────────────
+// The build-time VITE_API_BASE_URL is only for split hosting (static UI on
+// one origin, API on another). History lesson: a placeholder
+// (`https://seedbox-api.<domain>`) shipped in .env.production and turned
+// every "Cannot reach the server" login red. So:
+//  1. a baked value that still looks like a template is ignored entirely;
+//  2. if calls against the baked base die with a NETWORK error (not 4xx —
+//  those mean the server answered), we retry the same request against the
+//  origin that served the UI and, if that works, learn the override so
+//  <video>/<track> URL builders follow too.
+const BAKED_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const BAKED_IS_TEMPLATE = !BAKED_BASE || BAKED_BASE.includes('<') || BAKED_BASE.includes('seedbox-api.');
+const OVERRIDE_KEY = 'sb_api_base_override';
+
+export const apiBase = () => {
+  const saved = localStorage.getItem(OVERRIDE_KEY);
+  if (saved !== null) return saved;
+  return BAKED_IS_TEMPLATE ? '' : BAKED_BASE;
+};
+const setBaseOverride = (b) => {
+  if (b) localStorage.setItem(OVERRIDE_KEY, b);
+  else localStorage.removeItem(OVERRIDE_KEY);
+  window.dispatchEvent(new Event('sb_api_base_changed'));
+};
 const TOKEN_KEY = 'sb_session_token';
 const CONSENT_KEY = 'sb_consent'; // 'granted' | 'denied'
 
@@ -61,7 +84,7 @@ async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000, retries
   for (;;) {
     try {
       const res = await fetchWithTimeout(
-        `${API_BASE}${path}`,
+        `${apiBase()}${path}`,
         { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
         timeoutMs
       );
@@ -73,8 +96,29 @@ async function apiFetch(path, { method = 'GET', body, timeoutMs = 20000, retries
         err.data = data;
         throw err;
       }
+      // Success against a learned-override-less base: if the configured base
+      // was broken before, note that it works now (clears stale overrides).
       return data;
     } catch (err) {
+      // Network-level failure against a non-empty base: the baked URL may be
+      // wrong for how the UI was reached (LAN IP, tunnel, swapped ports).
+      // Retry against the origin that served this page — if THAT works,
+      // remember it so every future call (and stream URL) follows.
+      if (!err.status && apiBase() !== '' && window.location?.origin && !window.location.origin.startsWith(apiBase())) {
+        try {
+          const res2 = await fetchWithTimeout(
+            `${window.location.origin}${path}`,
+            { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined },
+            timeoutMs
+          );
+          const data2 = await res2.json().catch(() => null);
+          if (res2.ok) {
+            console.warn(`[seedbox] configured API base (${apiBase()}) unreachable — re-pinned to same-origin (${window.location.origin})`);
+            setBaseOverride(window.location.origin);
+            return data2;
+          }
+        } catch { /* fall through to the original error */ }
+      }
       // Retry idempotent GETs once or twice: a busy server (torrent engine
       // warming up) can otherwise leave the archive UI dead until reload.
       const transient = !err.status || err.status >= 500;
@@ -99,7 +143,7 @@ export const adminFetch = (path, adminKey, opts = {}) =>
   apiFetch(path, { ...opts, timeoutMs: opts.timeoutMs || 15000 }).catch((e) => { throw e; });
 
 export async function adminApi(path, adminKey, { method = 'GET', body } = {}) {
-  const res = await fetchWithTimeout(`${API_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${apiBase()}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey },
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -115,7 +159,7 @@ export const searchArchive = (q, page = 1) =>
   apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000, retries: 1 });
 export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });
 export const getSubtitleProxyUrl = (identifier, file) =>
-  `${API_BASE}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}`;
+  `${apiBase()}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}`;
 
 // ---------- Metadata (picture library / TV structure) ----------
 export const searchMetadata = (q, type = 'any') =>
@@ -171,17 +215,17 @@ export const getWarmupStatus = (infoHash, { fileIdx, positionSecs, durationSecs,
 };
 
 export const getTorrentStreamUrl = (infoHash, fileIndex) =>
-  `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
+  `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
 
 // ---------- Transcode (quality variants from one big source) ----------
 export const getTranscodeStatus = () => apiFetch('/api/transcode/status', { timeoutMs: 8000 });
 export const getTranscodeUrl = (infoHash, fileIndex, quality, startSecs = 0) => {
   const q = new URLSearchParams({ quality, token: getToken() || '' });
   if (startSecs > 0.5) q.set('t', String(Math.max(0, startSecs).toFixed(1)));
-  return `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/transcode?${q.toString()}`;
+  return `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/transcode?${q.toString()}`;
 };
 export const getTorrentSubtitleUrl = (infoHash, fileIndex) =>
-  `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}`;
+  `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}`;
 
 // ---------- Player heartbeat (drives the -5m/+5m buffer window) ----------
 export const sendStreamHeartbeat = (infoHash, fileIdx, position, duration) =>
