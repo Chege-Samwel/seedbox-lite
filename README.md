@@ -107,6 +107,25 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 [View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
 
+## 🍃 Small hosts & free tiers (Render/Railway, laptops)
+
+- **`LITE_MODE=true`** — one flag that shrinks every budget (30 conns, ~420 MB RSS
+  cap, max 2 torrents with HTTP 429 + auto-retry for extras, transcode **off**,
+  home-feed cached 30 min). Every knob is individually overridable — see
+  [`.env.example`](.env.example) and **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+- **Honest free-tier answer:** the torrent engine + transcoding cannot run on a
+  512 MB / 0.1 CPU free instance (piece hashing, swarm I/O, ffmpeg ≈ 1 core per
+  720p session). What *can* live there for free is the **frontend**: build
+  `client/dist`, host it as a static site with `VITE_API_BASE_URL` pointing at
+  your home server behind Cloudflare Tunnel/Tailscale — full guide + bandwidth
+  math for 3–5 users in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+- **Player resilience:** a server-side stream timeout now answers `503 +
+  Retry-After`, and the player auto-reconnects in place at the playhead with
+  backoff (never a dead video element), plus a mid-play starve watchdog and
+  honest "dead swarm" stalled reporting (`WARM_STALL_MS`).
+- **Cooler laptop:** run production (`cd client && npm run build && NODE_ENV=production npm start`)
+  instead of the Vite dev server, and use `LITE_MODE=true`.
+
 ## 🚀 Quick Start
 
 ### Using Docker (Recommended)

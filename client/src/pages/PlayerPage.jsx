@@ -23,7 +23,10 @@ const CAP_SIZES = ['Small', 'Medium', 'Large'];
 const CAP_CLASSES = ['cap-s', 'cap-m', 'cap-l'];
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
 const WARM_POLL_MS = 1500;
+const WARM_POLL_STALLED_MS = 4000; // dead swarm → poll gently (and cooler)
 const WARM_GIVE_UP_MS = 150000; // 2.5 min of polling before offering manual retry
+const RECONNECT_MAX = 8; // consecutive auto-reconnects before falling back to the warmup gate
+const STALL_WATCHDOG_MS = 15000; // mid-play starve this long ⇒ reattach at playhead
 
 export default function PlayerPage() {
   const { source } = useParams();
@@ -51,6 +54,15 @@ export default function PlayerPage() {
   const pendingSeek = useRef(null);
   const generation = useRef(0); // cancels stale async runs on re-entry/unmount
   const archiveRetried = useRef(false);
+  // Auto-reconnect machinery: a timeout/5xx/stream-drop must NEVER leave a
+  // dead player behind. We retry in place (resume at the playhead) with
+  // exponential backoff, and only fall back to the full warmup gate after
+  // several consecutive failures.
+  const reconnects = useRef(0);
+  const reconnectTimer = useRef(null);
+  const stallTimer = useRef(null);
+  const playedAnyRef = useRef(false); // did THIS attach produce playback yet?
+  const wantPlayRef = useRef(false);  // play() owed to the next canplay
 
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState(null);
@@ -68,6 +80,9 @@ export default function PlayerPage() {
   const [phase, setPhase] = useState('play'); // 'play' (archive: play immediately) | 'warming' | 'ready'
   const [warm, setWarm] = useState(null); // last warmup status payload
   const [warmError, setWarmError] = useState(null);
+  const [connNote, setConnNote] = useState(null); // auto-reconnect status line for overlays
+  const phaseRef = useRef(phase);
+  useEffect(() => { phaseRef.current = phase; }, [phase]);
 
   // Quality / transcode (torrent sources only)
   const [tcMenu, setTcMenu] = useState(false);
@@ -162,6 +177,54 @@ export default function PlayerPage() {
     }).catch(() => { /* status polling path reports real failures */ });
   }, [type, identifier]);
 
+  /** Re-attach the stream in place at the playhead (transcode: fresh -ss URL). */
+  const reattachAt = useCallback((posSecs, { bust = false } = {}) => {
+    playedAnyRef.current = false;
+    wantPlayRef.current = true;
+    if (durRef.current) setDuration(durRef.current);
+    if (transcodeRef.current) {
+      attachTranscode(posSecs);
+    } else {
+      pendingSeek.current = posSecs;
+      const base = getTorrentStreamUrl(identifier, fileIdxRef.current);
+      setInfo((i) => ({ ...i, src: bust ? `${base}&r=${Date.now()}` : base }));
+      setSrcKey((k) => k + 1);
+    }
+    setBuffering(true);
+  }, [identifier, attachTranscode]);
+
+  /** Schedule an in-place auto-reconnect with exponential backoff.
+   *  A timeout/503/dropped socket must never leave a dead player behind. */
+  const scheduleReconnect = useCallback((why) => {
+    if (type !== 'torrent') return;
+    if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; }
+    const n = reconnects.current + 1;
+    reconnects.current = n;
+    // If this attach never produced playback, the data plane (swarm), not
+    // the socket, is the problem — don't burn all attempts on blind
+    // reattaches; go back through the warmup gate instead.
+    const cap = playedAnyRef.current ? RECONNECT_MAX : 3;
+    if (n > cap) {
+      reconnects.current = 0;
+      setConnNote(null);
+      setWarmError('Stream kept dropping — re-warming the buffer.');
+      retryWarmup();
+      return;
+    }
+    const delay = Math.min(1000 * 2 ** Math.min(n - 1, 4), 15000);
+    const gen = generation.current;
+    setConnNote(`${why} — reconnecting in ${Math.max(1, Math.round(delay / 1000))}s · attempt ${n}/${cap}`);
+    setBuffering(true);
+    reconnectTimer.current = setTimeout(() => {
+      reconnectTimer.current = null;
+      if (generation.current !== gen) return;
+      const pos = curTimeRef.current || videoRef.current?.currentTime || 0;
+      warmAt(pos, { force: true }); // re-center the server window on the playhead
+      reattachAt(pos, { bust: true });
+    }, delay);
+  }, [type, warmAt, reattachAt]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /**
    * The gated start: warm ~1 minute from the resume/start position, poll
    * until ready, THEN attach the stream and play. Works no matter how the
@@ -190,6 +253,7 @@ export default function PlayerPage() {
         if (st.state === 'ready') {
           resumeTarget.current = startPos || 0; // applied on first canplay
           playableRef.current = st.containerPlayable !== false;
+          playedAnyRef.current = false; // this attach is unproven until it plays
           const { mode, q } = resolveMode(st.containerPlayable !== false);
           setPhase('ready');
           if (mode === 'transcode') {
@@ -203,9 +267,13 @@ export default function PlayerPage() {
           return; // video 'canplay' event calls applyReady
         }
         if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS) {
-          setWarmError('Taking much longer than usual — the swarm may be slow. You can keep waiting or retry.');
+          setWarmError(st?.stalled
+            ? 'This swarm is not sending data (it may be dead or a fake). You can keep waiting or go back and pick another source.'
+            : 'Taking much longer than usual — the swarm may be slow. You can keep waiting or retry.');
         }
-        warmPollTimer.current = setTimeout(() => { void pollOnce(); }, WARM_POLL_MS);
+        // Dead swarm? Poll gently — same liveness, a fraction of the CPU.
+        const nextDelay = st?.stalled ? WARM_POLL_STALLED_MS : WARM_POLL_MS;
+        warmPollTimer.current = setTimeout(() => { void pollOnce(); }, nextDelay);
       } catch (err) {
         if (generation.current !== gen) return;
         setWarmError(err.message || 'Warmup request failed');
@@ -297,15 +365,24 @@ export default function PlayerPage() {
     return () => {
       cancelled = true;
       if (warmPollTimer.current) clearTimeout(warmPollTimer.current);
+      if (stallTimer.current) clearTimeout(stallTimer.current);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     };
   }, [type, identifier, startIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const retryWarmup = useCallback(() => {
     const gen = ++generation.current;
+    // Full reset of the auto-reconnect machinery: the gate is authoritative now.
+    reconnects.current = 0;
+    if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
+    if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; }
+    setConnNote(null);
     setFatal(null);
     setLoading(false);
     setWarm(null);
-    beginWarmup(gen, magnetRef.current, fileIdxRef.current, videoRef.current?.currentTime || curTimeRef.current || 0);
+    // Prefer the mirrored playhead: the <video> element may already be
+    // unmounted or reset to 0 after an error, losing the resume position.
+    beginWarmup(gen, magnetRef.current, fileIdxRef.current, curTimeRef.current || videoRef.current?.currentTime || 0);
   }, [beginWarmup]);
 
   // ---------- Progress saving ----------
@@ -613,6 +690,11 @@ export default function PlayerPage() {
     } else if (st.state === 'connecting') {
       parts.push('Connected — starting buffer…');
     } else {
+      if (st.stalled) {
+        parts.push(st.stalledReason === 'no-peers'
+          ? '⏸ No peers sending data — this swarm looks dead or unreachable. Holding the slot and retrying…'
+          : '⏸ Peers connected but no data is flowing — the swarm may be dead or fake. Still trying…');
+      }
       const got = formatBytes(st.bufferedFromPos || 0);
       const want = formatBytes(st.targetBytes || 0);
       parts.push(`Buffering the first minute — ${got} / ${want}`);
@@ -654,16 +736,38 @@ export default function PlayerPage() {
             style={{ width: '100%', height: '100%' }}
             onWaiting={() => {
               setBuffering(true);
+              if (type !== 'torrent') return;
               // Stall self-heal: nudge the server window to the playhead
-              if (type === 'torrent') warmAt(videoRef.current?.currentTime || 0);
+              warmAt(videoRef.current?.currentTime || 0);
+              // Watchdog: still starved after 15s ⇒ the request silently
+              // died (server timeout, reap, proxy). Reattach at the playhead.
+              if (stallTimer.current) clearTimeout(stallTimer.current);
+              stallTimer.current = setTimeout(() => {
+                stallTimer.current = null;
+                const vv = videoRef.current;
+                if (!vv || vv.paused || vv.readyState >= 3) return;
+                if (phaseRef.current === 'play') scheduleReconnect('Playback stalled');
+              }, STALL_WATCHDOG_MS);
             }}
-            onPlaying={() => { setBuffering(false); setPlaying(true); }}
+            onPlaying={() => {
+              setBuffering(false);
+              setPlaying(true);
+              // Healthy playback ⇒ reset the auto-reconnect bookkeeping
+              playedAnyRef.current = true;
+              reconnects.current = 0;
+              setConnNote(null);
+              if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null; }
+            }}
             onCanPlay={() => {
               setBuffering(false);
               const v = videoRef.current;
               if (v && pendingSeek.current != null && pendingSeek.current > 1) {
                 try { v.currentTime = pendingSeek.current; } catch { /* fine */ }
                 pendingSeek.current = null;
+              }
+              if (v && wantPlayRef.current) {
+                wantPlayRef.current = false;
+                v.play?.().catch(() => { /* user can press play */ });
               }
               if (type === 'torrent' && phase === 'ready') {
                 setPhase('play');
@@ -704,13 +808,18 @@ export default function PlayerPage() {
                 }
                 return;
               }
-              // Torrent stream failed (reaped/404 mid-play etc.) — offer retry
-              setWarmError('Stream interrupted.');
-              setPhase('warming');
-              warmStartedAt.current = Date.now();
-              const gen = generation.current;
-              setInfo((i) => ({ ...i, src: null }));
-              setTimeout(() => { if (generation.current === gen) retryWarmup(); }, 800);
+              // Torrent stream failed — server setup-timeout (503), swarm
+              // starve-out, governor reap, etc. NEVER dead-stop: reconnect
+              // in place at the mirrored playhead with backoff. Only a drop
+              // during the warmup gate itself goes back through the gate.
+              if (phaseRef.current === 'warming') {
+                setWarmError('Stream interrupted — re-warming…');
+                const gen = generation.current;
+                setInfo((i) => ({ ...i, src: null }));
+                setTimeout(() => { if (generation.current === gen) retryWarmup(); }, 800);
+                return;
+              }
+              scheduleReconnect('Stream interrupted');
             }}
             onTimeUpdate={() => {
               const v = videoRef.current;
@@ -755,6 +864,7 @@ export default function PlayerPage() {
               <div className="spinner" />
               <div className="warm-title">{info.title}</div>
               <div className="warm-line">{warmLine || 'Preparing stream…'}</div>
+              {connNote && <div className="warm-line conn-note">{connNote}</div>}
               {warm?.containerPlayable === false && !tcAvailRef.current && (
                 <div className="warm-warn">
                   ⚠ This file is {warm.fileName?.split('.').pop()?.toUpperCase()} — browsers can't decode it (MKV/HEVC).
@@ -776,6 +886,18 @@ export default function PlayerPage() {
         {buffering && !loading && !warming && (
           <div className="buffer-overlay" onClick={(e) => e.stopPropagation()}>
             <div className="spinner" />
+            {connNote && (
+              <div className="conn-note">
+                {connNote}
+                <button
+                  className="btn btn-dark btn-sm"
+                  style={{ marginLeft: 10 }}
+                  onClick={(e) => { e.stopPropagation(); retryWarmup(); }}
+                >
+                  Full re-warm
+                </button>
+              </div>
+            )}
           </div>
         )}
 

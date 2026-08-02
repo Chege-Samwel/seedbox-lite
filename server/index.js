@@ -139,21 +139,31 @@ const isCloud = process.env.CLOUD_DEPLOYMENT === 'true' ||
 console.log(`🌐 Running in ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'} mode`);
 if (isCloud) console.log(`☁️ Cloud/DigitalOcean deployment detected`);
 
+// Central resource budget (LITE_MODE presets + explicit env overrides).
+const tuning = require('./lib/tuning');
+if (tuning.lite) {
+  console.log('🍃 LITE MODE active — reduced memory/CPU budget for small hosts');
+  console.log(`🍃 Budget: ${tuning.describe()}`);
+}
+
 // Apply production optimization
 const client = new WebTorrent({
   uploadLimit: isProduction ? config.production.network.defaultUploadLimit : 10000,
   downloadLimit: -1, // No download limit
-  maxConns: isProduction ? config.production.network.maxConns : 150,
+  maxConns: tuning.lite ? tuning.maxConns : (isProduction ? config.production.network.maxConns : tuning.maxConns),
   webSeeds: true,    // Enable web seeds
   tracker: true,     // Enable trackers
   pex: true,         // Enable peer exchange
   dht: true,         // Enable DHT
-  
+
+  // Constrain long-lived web connections when the budget says so
+  ...(tuning.lite && { maxWebConns: tuning.maxWebConns }),
+
   // Additional network optimizations for cloud environments
   ...(isCloud && {
     // More conservative connection handling for cloud environments
-    maxConns: 80,    // Reduced connections to prevent overwhelming the server
-    maxWebConns: 20, // Lower web connections limit
+    maxConns: tuning.lite ? tuning.maxConns : 80, // Reduced connections to prevent overwhelming the server
+    maxWebConns: tuning.maxWebConns, // Lower web connections limit
     
     // Apply more aggressive timeouts for DHT and tracker communication
     dhtTimeout: 10000,       // 10 seconds DHT timeout
@@ -846,6 +856,10 @@ const loadTorrentFromIdImpl = (torrentId) => {
  * Public loader: one in-flight load per info hash, forever. Double-clicks,
  * exit-and-reopen, and home+player racing all share the same Promise — so
  * there is exactly one client.add(), one 60s timeout, one resolution path.
+ *
+ * Capacity guard (MAX_ACTIVE_TORRENTS / LITE_MODE): on small hosts a third
+ * multi-GB torrent is the classic OOM path, so refuse NEW loads beyond the
+ * cap with a clear SERVER_BUSY error instead of letting the kernel decide.
  */
 const loadTorrentFromId = (torrentId) => {
   const hash = hashFromId(torrentId);
@@ -858,6 +872,19 @@ const loadTorrentFromId = (torrentId) => {
     }
     const inflight = loadingPromises.get(hash);
     if (inflight) return inflight;
+    const cap = tuning.maxActiveTorrents;
+    // NB: an in-flight load shows up in BOTH client.torrents and
+    // loadingPromises — count the union (≈ max), not the sum, or every
+    // loading torrent double-counts and the cap bites one slot early.
+    const active = Math.max(client.torrents.length, loadingPromises.size);
+    if (cap > 0 && active >= cap) {
+      const err = new Error(
+        `Server is at capacity (${cap} active torrent${cap === 1 ? '' : 's'}). ` +
+        'An idle torrent will be reclaimed automatically — try again shortly, or raise MAX_ACTIVE_TORRENTS.'
+      );
+      err.code = 'SERVER_BUSY';
+      return Promise.reject(err);
+    }
   }
   const promise = loadTorrentFromIdImpl(torrentId);
   const key = hash || `id:${String(torrentId).slice(0, 64)}`;
@@ -1215,6 +1242,18 @@ app.locals.wt = {
   resolve: universalTorrentResolver,
   load: loadTorrentFromId,
   isLoading: isLoadingHash,
+  // Synchronous capacity probe (MAX_ACTIVE_TORRENTS) so routes can answer
+  // 429 immediately instead of discovering the refusal inside a promise.
+  canLoad: (hash) => {
+    const h = String(hash || '').toLowerCase();
+    if (h && (torrents[h] || loadingPromises.has(h))) return { ok: true };
+    if (h && client.torrents.find((t) => t.infoHash === h)) return { ok: true };
+    const cap = tuning.maxActiveTorrents;
+    // Union semantics: in-flight loads are already inside client.torrents
+    const active = Math.max(client.torrents.length, loadingPromises.size);
+    if (cap > 0 && active >= cap) return { ok: false, cap };
+    return { ok: true };
+  },
 };
 require('./routes/features')(app);
 
@@ -1864,13 +1903,20 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
   
   // Set a timeout for the stream SETUP only — once headers are flowing, a
   // long-lived reader (e.g. an ffmpeg transcode pulling the whole film over
-  // loopback) is healthy traffic, not a hang.
+  // loopback) is healthy traffic, not a hang. On timeout we answer 503 +
+  // Retry-After so the player can auto-reconnect at the same position
+  // instead of treating it as a dead video element.
   const streamTimeout = setTimeout(() => {
     if (!res.headersSent && !res.writableEnded) {
       console.log(`⏱️ Stream request ${streamRequestId} timed out (setup)`);
-      res.status(504).json({ error: 'Streaming request timeout' });
+      res.set('Retry-After', '3');
+      res.status(503).json({
+        error: 'Stream setup timeout — data is not arriving from the swarm yet',
+        retryable: true,
+        retryAfterSecs: 3,
+      });
     }
-  }, 60000); // 60-second max for stream setup
+  }, tuning.streamSetupTimeoutMs);
   
   try {
     const torrent = await universalTorrentResolver(identifier);

@@ -19,14 +19,18 @@
 const VIDEO_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mkv', '.avi', '.mov'];
 const BROWSER_PLAYABLE_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mov'];
 
-const DEFAULT_TARGET = parseInt(process.env.WARM_DEFAULT_MB || '32', 10) * 1024 * 1024;
+// Budgets resolved centrally (LITE_MODE presets + explicit overrides).
+const tuning = require('./tuning');
+const DEFAULT_TARGET = tuning.warmTargetMb * 1024 * 1024;
 const MIN_TARGET = 4 * 1024 * 1024;
-const MAX_TARGET = parseInt(process.env.WARM_MAX_MB || '128', 10) * 1024 * 1024;
+const MAX_TARGET = tuning.warmMaxMb * 1024 * 1024;
 // Ready when this many contiguous bytes from the position are buffered
 // (≈ "the starting 1 minute" for typical bitrates) — or the whole remainder.
-const READY_MIN_BYTES = parseInt(process.env.WARM_READY_MIN_MB || '8', 10) * 1024 * 1024;
+const READY_MIN_BYTES = tuning.warmReadyMinMb * 1024 * 1024;
 // If nobody asks about a warm window for this long, deselect it.
-const WINDOW_TTL_MS = (parseFloat(process.env.WARM_WINDOW_KEEP_MIN || '4') * 60 * 1000);
+const WINDOW_TTL_MS = tuning.warmWindowKeepMin * 60 * 1000;
+// No contiguous-byte progress for this long ⇒ the swarm is (probably) dead.
+const STALL_MS = tuning.warmStallMs;
 const JANITOR_EVERY_MS = 20000;
 // Fixed selection priority — deselect() in webtorrent@1.9.7 matches
 // {from, to, priority} exactly, so it must be stable identity.
@@ -123,9 +127,21 @@ function create({ client, governor, isLoading = () => false }) {
     const speed = torrent.downloadSpeed || 0;
     const peers = torrent.numPeers || 0;
 
-    // Keep the window alive while the client cares about it
+    // Keep the window alive while the client cares about it, and track
+    // contiguous-byte progress so a dead/fake swarm is detectable instead
+    // of looking like an endless "connecting…".
+    const now = Date.now();
     const win = windows.get(`${hash}:${idx}`);
-    if (win) win.updatedAt = Date.now();
+    if (win) {
+      win.updatedAt = now;
+      if (win.lastBytes == null || Math.abs(win.bytePos - pos) > 1048576) {
+        win.lastBytes = buffered;
+        win.lastProgressAt = now;
+      } else if (buffered > win.lastBytes) {
+        win.lastBytes = buffered;
+        win.lastProgressAt = now;
+      }
+    }
 
     let state = 'connecting';
     if (file.progress >= 0.999 || buffered >= Math.min(readyTarget, remaining * 0.98) || remaining <= buffered + 1) {
@@ -133,6 +149,10 @@ function create({ client, governor, isLoading = () => false }) {
     } else if (buffered > 0 || speed > 0 || peers > 0) {
       state = 'warming';
     }
+    // Stalled: not ready and no measured byte progress for STALL_MS. This is
+    // what "the swarm is dead or starved" looks like — surface it honestly
+    // so the player can keep waiting gently instead of hard-failing.
+    const stalled = state !== 'ready' && !!win && (now - (win.lastProgressAt || win.updatedAt)) > STALL_MS;
     // ETA in seconds, when knowable
     const etaSecs = speed > 0 ? Math.max(0, (Math.min(readyTarget, remaining) - buffered) / speed) : null;
 
@@ -149,6 +169,8 @@ function create({ client, governor, isLoading = () => false }) {
       speed,
       peers,
       etaSecs,
+      stalled,
+      stalledReason: stalled ? (peers === 0 ? 'no-peers' : 'no-progress') : null,
       torrentProgress: torrent.progress || 0,
       torrentName: torrent.name || null,
     };

@@ -11,6 +11,7 @@ const { requireSession, requireAdmin, extractToken } = require('../lib/authMiddl
 const ia = require('../lib/iaService');
 const meta = require('../lib/metadataService');
 const userStore = require('../lib/userStore');
+const tuning = require('../lib/tuning');
 
 const VIDEO_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mkv', '.avi', '.mov'];
 const BROWSER_PLAYABLE_EXTS = ['.mp4', '.m4v', '.webm', '.ogv', '.mov'];
@@ -203,8 +204,17 @@ module.exports = function mount(app) {
 
   // ============ INTERNET ARCHIVE (legal catalog) ============
 
+  // The home feed is identical for every user and expensive to build
+  // (several upstream IA calls). Cache it for BROWSE_CACHE_MIN minutes and
+  // serve the last good copy when the archive is unreachable — this kills
+  // the multi-second cold-loads and most of the repeat CPU on small hosts.
+  let homeCache = { at: 0, data: null };
   app.get('/api/browse/home', requireSession, async (_req, res) => {
-    const data = await withFallback(ia.home(), 20000, { rows: [], offline: true });
+    const now = Date.now();
+    const freshMs = tuning.browseCacheMin * 60 * 1000;
+    if (homeCache.data && now - homeCache.at < freshMs) return res.json(homeCache.data);
+    const data = await withFallback(ia.home(), 20000, homeCache.data || { rows: [], offline: true });
+    if (data && !data.offline) homeCache = { at: now, data };
     res.json(data);
   });
 
@@ -310,7 +320,19 @@ module.exports = function mount(app) {
     if (!torrent) {
       // Not in the engine (fresh, reaped, or post-restart): start loading
       // from the magnet the client remembered, respond "loading" instantly.
-      const { load, isLoading } = wt();
+      const { load, isLoading, canLoad } = wt();
+      // Capacity gate (MAX_ACTIVE_TORRENTS / LITE_MODE): refuse honestly
+      // instead of queueing a load the little host cannot survive.
+      const gate = canLoad ? canLoad(hash) : { ok: true };
+      if (!gate.ok) {
+        res.set('Retry-After', '30');
+        return res.status(429).json({
+          error: `Server is at capacity (${gate.cap} active torrent${gate.cap === 1 ? '' : 's'})`,
+          code: 'SERVER_BUSY',
+          retryable: true,
+          retryAfterSecs: 30,
+        });
+      }
       const magnetUri = typeof magnet === 'string' && magnet.startsWith('magnet:')
         ? magnet
         : `magnet:?xt=urn:btih:${hash}`;
@@ -385,15 +407,20 @@ module.exports = function mount(app) {
   const transcoder = require('../lib/transcoder');
 
   app.get('/api/transcode/status', requireSession, (_req, res) => {
-    transcoder.probe((info) => {
-      res.json({
-        available: !!info,
-        ffmpeg: info || null,
-        defaultQuality: transcoder.DEFAULT_QUALITY,
-        presets: transcoder.presetsForStatus(),
-        stats: transcoder.stats(),
-      });
+    const finish = (info) => res.json({
+      // "available" combines: allowed by config AND ffmpeg present. A lite /
+      // budget host reports disabled so the player hides the quality menu
+      // instead of offering renditions the CPU cannot produce.
+      enabled: tuning.transcodeEnabled,
+      available: tuning.transcodeEnabled && !!info,
+      ffmpeg: tuning.transcodeEnabled ? (info || null) : null,
+      lite: tuning.lite,
+      defaultQuality: transcoder.DEFAULT_QUALITY,
+      presets: tuning.transcodeEnabled ? transcoder.presetsForStatus() : [],
+      stats: transcoder.stats(),
     });
+    if (!tuning.transcodeEnabled) return finish(null);
+    transcoder.probe(finish);
   });
 
   /**
@@ -414,6 +441,13 @@ module.exports = function mount(app) {
         howTo: 'Ubuntu/Debian: sudo apt install ffmpeg && restart the server (or npm i ffmpeg-static in server/)',
       });
     };
+
+    if (!tuning.transcodeEnabled) {
+      return res.status(501).json({
+        error: 'Transcoding disabled on this server (LITE_MODE or DISABLE_TRANSCODE)',
+        disabled: true,
+      });
+    }
 
     transcoder.probe((info) => {
       if (!info) return sendUnavailable();

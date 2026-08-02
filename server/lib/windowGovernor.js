@@ -17,11 +17,14 @@
  *  - Idle torrents (nothing streamed for IDLE_TORRENT_TTL_MIN) are destroyed.
  *  - Hard RSS guard: past MAX_RSS_MB, governor sheds unstreamed torrents.
  */
-const BACK_MIN = parseFloat(process.env.WINDOW_BACK_MIN || '5');
-const AHEAD_MIN = parseFloat(process.env.WINDOW_AHEAD_MIN || '5');
-const KEEP_MIN = parseFloat(process.env.LAST_REGION_KEEP_MIN || '4');
-const IDLE_TTL_MS = (parseFloat(process.env.IDLE_TORRENT_TTL_MIN || '10') * 60 * 1000);
-const MAX_RSS_MB = parseFloat(process.env.MAX_RSS_MB || '1400');
+// Budgets come from the central tuning module so LITE_MODE presets and
+// explicit env overrides resolve in exactly one place.
+const tuning = require('./tuning');
+const BACK_MIN = tuning.windowBackMin;
+const AHEAD_MIN = tuning.windowAheadMin;
+const KEEP_MIN = tuning.lastRegionKeepMin;
+const IDLE_TTL_MS = tuning.idleTorrentTtlMin * 60 * 1000;
+const MAX_RSS_MB = tuning.maxRssMb;
 const JANITOR_EVERY_MS = 10000;
 
 // Rolling disk store: some of the window bytes live on disk (capped) instead
@@ -321,7 +324,7 @@ function create(client, destroyTorrent) {
   const timer = setInterval(janitor, JANITOR_EVERY_MS);
   if (timer.unref) timer.unref();
 
-  console.log(`🪟 Memory governor active — window: -${BACK_MIN}m / +${AHEAD_MIN}m · retain last region ${KEEP_MIN}m · idle reap ${Math.round(IDLE_TTL_MS / 60000)}m · RSS cap ${MAX_RSS_MB}MB`);
+  console.log(`🪟 Memory governor active — ${tuning.describe()}`);
 
   return { registerStream, notePosition, heartbeat, heartbeatByFile, endStream, touch: (id) => {
     // streamId touch (kept for backward compatibility)
