@@ -160,6 +160,10 @@ export const searchArchive = (q, page = 1) =>
 export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });
 export const getSubtitleProxyUrl = (identifier, file) =>
   `${apiBase()}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}`;
+// Range-capable server proxy for archive.org video — used as the automatic
+// fallback when an IA edge node CORS-blocks direct media playback.
+export const getArchiveStreamProxyUrl = (identifier, file) =>
+  `${apiBase()}/api/browse/stream?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}&token=${encodeURIComponent(getToken() || '')}`;
 
 // ---------- Metadata (picture library / TV structure) ----------
 export const searchMetadata = (q, type = 'any') =>

@@ -5,7 +5,7 @@ import {
   Play, Pause, Volume2, VolumeX, PictureInPicture2, RotateCw, Settings,
 } from 'lucide-react';
 import {
-  getArchiveItem, getSubtitleProxyUrl, getTorrentStreamUrl, getTorrentDetails,
+  getArchiveItem, getSubtitleProxyUrl, getArchiveStreamProxyUrl, getTorrentStreamUrl, getTorrentDetails,
   getTorrentSubtitleUrl, getHistoryEntry, saveHistory, getLibrary, sendStreamHeartbeat,
   startWarmup, getWarmupStatus, getTranscodeStatus, getTranscodeUrl,
 } from '../services/api';
@@ -53,7 +53,8 @@ export default function PlayerPage() {
   const lastSeekWarm = useRef(0);
   const pendingSeek = useRef(null);
   const generation = useRef(0); // cancels stale async runs on re-entry/unmount
-  const archiveRetried = useRef(false);
+  const archiveProxied = useRef(false); // already fell back to the IA stream proxy?
+  const archiveProxyUrl = useRef(null); // prepared at load for the error path
   // Auto-reconnect machinery: a timeout/5xx/stream-drop must NEVER leave a
   // dead player behind. We retry in place (resume at the playhead) with
   // exponential backoff, and only fall back to the full warmup gate after
@@ -298,6 +299,8 @@ export default function PlayerPage() {
             id: `ia-${i}`, label: s.name, url: getSubtitleProxyUrl(item.id, s.name),
           }));
           setTracks(subs);
+          archiveProxied.current = false;
+          archiveProxyUrl.current = getArchiveStreamProxyUrl(identifier, video.name);
           setInfo({
             title: item.title, subtitle: item.year || '', kind: 'movie',
             poster: item.poster, backdrop: item.backdrop, src: video.url,
@@ -732,7 +735,12 @@ export default function PlayerPage() {
             src={info.src}
             controls={isIos} /* iOS handles custom controls poorly */
             playsInline
-            crossOrigin="anonymous"
+            // NB: no crossOrigin="anonymous" — several archive.org edge
+            // nodes omit CORS headers, which turns that attribute into a
+            // hard playback death-sentence (ERR_FAILED). Without it the
+            // browser does a plain media fetch that plays everywhere.
+            // Same-origin sources and CORS-proxied <track> subs are
+            // unaffected either way.
             style={{ width: '100%', height: '100%' }}
             onWaiting={() => {
               setBuffering(true);
@@ -801,10 +809,17 @@ export default function PlayerPage() {
             onSeeking={() => setBuffering(true)}
             onError={() => {
               if (type === 'archive') {
-                // IA CDN occasionally blips — one silent reload retry
-                if (!archiveRetried.current && videoRef.current) {
-                  archiveRetried.current = true;
-                  setTimeout(() => { try { videoRef.current?.load(); videoRef.current?.play?.().catch(() => {}); } catch { /* fine */ } }, 1500);
+                // Direct CDN media can be CORS-blocked by some archive.org
+                // edge nodes (the old crossOrigin attr made this fatal).
+                // Swap to the server's range-capable proxy, same position.
+                if (!archiveProxied.current && archiveProxyUrl.current) {
+                  archiveProxied.current = true;
+                  const pos = videoRef.current?.currentTime || 0;
+                  pendingSeek.current = pos;
+                  wantPlayRef.current = true;
+                  setInfo((i) => ({ ...i, src: archiveProxyUrl.current }));
+                  setSrcKey((k) => k + 1);
+                  setBuffering(true);
                 }
                 return;
               }

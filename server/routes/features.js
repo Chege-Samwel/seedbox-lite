@@ -256,6 +256,51 @@ module.exports = function mount(app) {
     }
   });
 
+  const { Readable } = require('stream');
+  const { pipeline } = require('stream/promises');
+
+  // Video stream proxy for archive.org media — range-aware, closed (only
+  // archive.org/download URLs are constructed server-side; auth required).
+  // Some IA edge nodes omit CORS headers which hard-kills <video> playback
+  // from the browser (field: "blocked by CORS policy … ERR_FAILED"). The
+  // player tries the CDN URL directly and falls back here at the same
+  // position. This is exempt from the global 30s API timeout (index.js).
+  app.get('/api/browse/stream', requireSession, async (req, res) => {
+    const { item: identifier, file } = req.query;
+    if (!identifier || !file) return res.status(400).json({ error: 'item and file are required' });
+    const safeFile = String(file);
+    if (safeFile.includes('..') || safeFile.includes('/')) return res.status(400).json({ error: 'Invalid file' });
+    if (!VIDEO_EXTS.includes(extOf(safeFile))) return res.status(400).json({ error: 'Not a video file' });
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort()); // viewer left → stop pulling
+    try {
+      const headers = {};
+      if (req.headers.range) headers.Range = req.headers.range; // scrubber needs byte ranges
+      const upstream = await fetch(
+        `https://archive.org/download/${encodeURIComponent(identifier)}/${encodeURIComponent(safeFile)}`,
+        { headers, signal: controller.signal, redirect: 'follow' }
+      );
+      if (!upstream.ok && upstream.status !== 206) {
+        return res.status(502).json({ error: `Archive returned HTTP ${upstream.status}` });
+      }
+      res.status(upstream.status === 206 ? 206 : 200);
+      for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+        const v = upstream.headers.get(h);
+        if (v) res.set(h, v);
+      }
+      if (!upstream.headers.get('content-type')) res.set('Content-Type', 'video/mp4');
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Cache-Control', 'private, max-age=3600');
+      await pipeline(Readable.fromWeb(upstream.body), res);
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        console.warn(`⚠️ Archive stream proxy failed for ${identifier}/${safeFile}: ${err.message}`);
+        if (!res.headersSent) res.status(502).json({ error: 'Archive stream failed' });
+      }
+    }
+  });
+
   // ============ METADATA / PICTURE LIBRARY ============
 
   app.get('/api/metadata/search', requireSession, async (req, res) => {

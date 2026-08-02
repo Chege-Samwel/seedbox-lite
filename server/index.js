@@ -114,7 +114,8 @@ app.use((req, res, next) => {
   // EXEMPT video streams/downloads: a fresh seek into an unbuffered region
   // legitimately takes longer on a slow swarm, and the stream handler has
   // its own 60s timeout.
-  const isStreamRoute = /\/api\/torrents\/[^/]+\/files\/[^/]+\/(stream|download|transcode)/.test(req.path);
+  const isStreamRoute = /\/api\/torrents\/[^/]+\/files\/[^/]+\/(stream|download|transcode)/.test(req.path)
+    || req.path === '/api/browse/stream'; // archive.org media proxy — long-lived by nature
   if (isStreamRoute) return next();
 
   res.setTimeout(30000, () => {
