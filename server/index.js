@@ -114,7 +114,7 @@ app.use((req, res, next) => {
   // EXEMPT video streams/downloads: a fresh seek into an unbuffered region
   // legitimately takes longer on a slow swarm, and the stream handler has
   // its own 60s timeout.
-  const isStreamRoute = /\/api\/torrents\/[^/]+\/files\/[^/]+\/(stream|download)/.test(req.path);
+  const isStreamRoute = /\/api\/torrents\/[^/]+\/files\/[^/]+\/(stream|download|transcode)/.test(req.path);
   if (isStreamRoute) return next();
 
   res.setTimeout(30000, () => {
@@ -1862,10 +1862,12 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
   // Track this specific stream request
   const streamRequestId = `${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   
-  // Set a timeout for the entire streaming request
+  // Set a timeout for the stream SETUP only — once headers are flowing, a
+  // long-lived reader (e.g. an ffmpeg transcode pulling the whole film over
+  // loopback) is healthy traffic, not a hang.
   const streamTimeout = setTimeout(() => {
-    console.log(`⏱️ Stream request ${streamRequestId} timed out`);
     if (!res.headersSent && !res.writableEnded) {
+      console.log(`⏱️ Stream request ${streamRequestId} timed out (setup)`);
       res.status(504).json({ error: 'Streaming request timeout' });
     }
   }, 60000); // 60-second max for stream setup

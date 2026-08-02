@@ -41,6 +41,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 - **Rolling disk store (not RAM)** — pieces are written to server disk in a strictly capped rolling window (~10 min of media). The oldest chunks behind the playhead are auto-evicted minute-by-minute as the governor downloads the next minute ahead; only ~3 min of media ever sits in RAM. Torrent removal and server boot wipe all chunks. Configurable: `STORE_DIR`, `STORE_CAP_MB`, `DISK_CAP_MB`.
 - **Consent & persistence** — storage-consent banner: *Accept* keeps the login persistent in the browser for auto-login; *Essential only* keeps everything tab-scoped. History, pipeline, favorites and tickets always persist server-side per ticket, and the pipeline **rehydrates** its magnets after a server restart.
 - **Favorites** — heart anything (archive films, shows, pipeline items); a Favorites row sits on Home, right after Continue Watching.
+- **Quality variants (transcode)** — a Netflix-style quality selector in the player: **Auto / Source / 1080p / 720p / 480p / 360p**, rendered on the fly from one high-quality source by ffmpeg. *Auto* plays the original file when the browser can, and transcodes when it can't — which is also how **MKV/HEVC becomes playable**. Renders are position-aware (`-ss` + absolute timestamps), so **seeks and quality switches keep your clock, scrubber and subtitles aligned**. Laptop-safe by default: `veryfast` preset, 720p recommendation, 2-session cap. Needs `ffmpeg` (`sudo apt install ffmpeg`) or the bundled `ffmpeg-static` fallback; tune via `TRANSCODE_*` env vars.
 - **Legal separation** — first-run legal notice (acknowledgment stored) and [`LEGAL.md`](LEGAL.md): the operator ships no content and accepts no liability for what users choose to add.
 
 ### 🔌 New API surface
@@ -52,6 +53,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 | Catalog | `GET /api/browse/home` · `GET /api/browse/search?q=` · `GET /api/browse/item/:id` · `GET /api/browse/subtitle` |
 | Pictures/TV | `GET /api/metadata/search?q=` · `GET /api/metadata/show?name=&season=` |
 | Warmup (play-gated) | `POST /api/torrents/:hash/warmup` · `GET /api/torrents/:hash/warmup` |
+| Transcode | `GET /api/transcode/status` · `GET /api/torrents/:hash/files/:idx/transcode?quality=&t=` |
 | Pipeline | `GET/POST /api/me/library` · `PATCH/DELETE /api/me/library/:id` · `POST /api/me/library/:id/artwork` |
 | History | `GET/POST /api/me/history` · `GET/DELETE /api/me/history/:key` · `DELETE /api/me/history` |
 | Tracking | `GET /api/me/shows` · `GET /api/me/shows/:key` · `POST /api/me/shows/watched` |

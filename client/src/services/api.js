@@ -172,6 +172,14 @@ export const getWarmupStatus = (infoHash, { fileIdx, positionSecs, durationSecs,
 
 export const getTorrentStreamUrl = (infoHash, fileIndex) =>
   `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}`;
+
+// ---------- Transcode (quality variants from one big source) ----------
+export const getTranscodeStatus = () => apiFetch('/api/transcode/status', { timeoutMs: 8000 });
+export const getTranscodeUrl = (infoHash, fileIndex, quality, startSecs = 0) => {
+  const q = new URLSearchParams({ quality, token: getToken() || '' });
+  if (startSecs > 0.5) q.set('t', String(Math.max(0, startSecs).toFixed(1)));
+  return `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/transcode?${q.toString()}`;
+};
 export const getTorrentSubtitleUrl = (infoHash, fileIndex) =>
   `${API_BASE}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}`;
 

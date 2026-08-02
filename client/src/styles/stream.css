@@ -325,6 +325,14 @@ button { font-family: inherit; }
    its default cursor and looked "stuck" until a click. */
 .player-shell.ui-hidden * { cursor: none !important; }
 
+/* Quality selector (player) */
+.q-chip { font-size: 10px; font-weight: 800; letter-spacing: 0.4px; margin-left: 2px; color: var(--text); }
+.q-note { font-size: 11px; color: var(--text-faint); margin-left: 6px; }
+.q-unavail { padding: 8px 10px; font-size: 12px; color: var(--warn); line-height: 1.5; }
+.q-unavail code { background: #1a2130; padding: 1px 5px; border-radius: 5px; }
+.sub-item:disabled { opacity: 0.45; cursor: not-allowed; }
+.icon-btn { position: relative; }
+
 /* Offline catalog banner (home) */
 .offline-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;

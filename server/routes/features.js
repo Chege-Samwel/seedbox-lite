@@ -381,6 +381,61 @@ module.exports = function mount(app) {
     }
   });
 
+  // ============ TRANSCODE — quality variants from one big source ============
+  const transcoder = require('../lib/transcoder');
+
+  app.get('/api/transcode/status', requireSession, (_req, res) => {
+    transcoder.probe((info) => {
+      res.json({
+        available: !!info,
+        ffmpeg: info || null,
+        defaultQuality: transcoder.DEFAULT_QUALITY,
+        presets: transcoder.presetsForStatus(),
+        stats: transcoder.stats(),
+      });
+    });
+  });
+
+  /**
+   * GET /api/torrents/:hash/files/:idx/transcode?quality=720p&t=SECONDS
+   * Fragmented-MP4 (instant-start) H.264/AAC rendition streamed from ffmpeg.
+   * The player restarts this URL with a new `t` for seeks ("go to time") and
+   * quality switches. Source comes through our own range streamer, so the
+   * governor's ~5min window applies underneath automatically.
+   */
+  app.get('/api/torrents/:identifier/files/:fileIdx/transcode', requireSession, (req, res) => {
+    const hash = normalizeHash(req.params.identifier) || String(req.params.identifier || '').toLowerCase();
+    const governor = req.app.locals.governor;
+    if (governor) governor.touchHash(hash);
+
+    const sendUnavailable = () => {
+      res.status(501).json({
+        error: 'Transcoding unavailable — ffmpeg is not installed on the server',
+        howTo: 'Ubuntu/Debian: sudo apt install ffmpeg && restart the server (or npm i ffmpeg-static in server/)',
+      });
+    };
+
+    transcoder.probe((info) => {
+      if (!info) return sendUnavailable();
+      const quality = transcoder.PRESETS[req.query.quality] ? req.query.quality : transcoder.DEFAULT_QUALITY;
+      const t = Math.max(0, parseFloat(req.query.t) || 0);
+      const token = extractToken(req) || '';
+      const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+      const host = req.headers.host || '127.0.0.1:3000';
+      const fileIdx = encodeURIComponent(req.params.fileIdx);
+      const srcUrl = `${proto}://${host}/api/torrents/${hash}/files/${fileIdx}/stream?token=${encodeURIComponent(token)}`;
+      const result = transcoder.transcodeInto({
+        srcUrl,
+        quality,
+        startSecs: t,
+        token,
+        res,
+        label: `${String(hash).slice(0, 8)}/${fileIdx}`,
+      });
+      if (!result.ok && !res.headersSent) res.status(500).json({ error: result.error });
+    });
+  });
+
   // ============ PER-USER: PIPELINE (magnet library) ============
 
   function findTorrent(infoHash) {

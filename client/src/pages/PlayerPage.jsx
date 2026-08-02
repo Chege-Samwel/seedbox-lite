@@ -2,12 +2,12 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import {
   ArrowLeft, MessageSquare, Upload, Maximize, Minimize,
-  Play, Pause, Volume2, VolumeX, PictureInPicture2, RotateCw,
+  Play, Pause, Volume2, VolumeX, PictureInPicture2, RotateCw, Settings,
 } from 'lucide-react';
 import {
   getArchiveItem, getSubtitleProxyUrl, getTorrentStreamUrl, getTorrentDetails,
   getTorrentSubtitleUrl, getHistoryEntry, saveHistory, getLibrary, sendStreamHeartbeat,
-  startWarmup, getWarmupStatus,
+  startWarmup, getWarmupStatus, getTranscodeStatus, getTranscodeUrl,
 } from '../services/api';
 import { formatTime, formatBytes, formatSpeed } from '../utils/format';
 import { useToast } from '../hooks/useToast';
@@ -69,6 +69,17 @@ export default function PlayerPage() {
   const [warm, setWarm] = useState(null); // last warmup status payload
   const [warmError, setWarmError] = useState(null);
 
+  // Quality / transcode (torrent sources only)
+  const [tcMenu, setTcMenu] = useState(false);
+  const [tcStatus, setTcStatus] = useState(null); // { available, presets, defaultQuality }
+  const [qualityPref, setQualityPref] = useState(() => localStorage.getItem('sb_quality') || 'auto');
+  const [transcodeQ, setTranscodeQ] = useState(null); // active rendition e.g. '720p' (null = direct)
+  const transcodeRef = useRef(null); // mirrors transcodeQ for async paths
+  const qualityRef = useRef(qualityPref);
+  const playableRef = useRef(true); // source container playability
+  const tcAvailRef = useRef(false);
+  const tcDefaultRef = useRef('720p');
+
   // playback-ui state
   const [playing, setPlaying] = useState(false);
   const [curTime, setCurTime] = useState(0);
@@ -97,7 +108,8 @@ export default function PlayerPage() {
   // ---------- Warming helpers ----------
   const applyReady = useCallback((v, startPos) => {
     if (!v) return;
-    if (startPos > 1 && v.duration && startPos < v.duration - 0.5) {
+    // Transcoded streams are already positioned at startPos via -ss/-output_ts_offset
+    if (!transcodeRef.current && startPos > 1 && v.duration && startPos < v.duration - 0.5) {
       if (v.readyState >= 1) {
         try { v.currentTime = startPos; } catch { /* fine */ }
       } else {
@@ -110,6 +122,27 @@ export default function PlayerPage() {
       setTimeout(() => setResumeNote((n) => (n === startPos ? null : n)), 6000);
     }
   }, []);
+
+  // ---------- Transcode (quality variants) ----------
+  const setTranscodeBoth = (q) => { transcodeRef.current = q; setTranscodeQ(q); };
+
+  const resolveMode = (playable) => {
+    const pref = qualityRef.current;
+    const avail = !!tcAvailRef.current;
+    if (pref === 'source') return { mode: 'direct' };
+    if (avail && pref !== 'auto') return { mode: 'transcode', q: pref };
+    if (avail && !playable) return { mode: 'transcode', q: tcDefaultRef.current || '720p' };
+    return { mode: 'direct' };
+  };
+
+  /** Point the <video> at a transcode rendition rendering from t (absolute film secs). */
+  const attachTranscode = useCallback((tSecs = 0) => {
+    const q = transcodeRef.current || '720p';
+    if (durRef.current) setDuration(durRef.current);
+    setInfo((i) => ({ ...i, src: getTranscodeUrl(identifier, fileIdxRef.current, q, tSecs) }));
+    setSrcKey((k) => k + 1);
+    setBuffering(true);
+  }, [identifier]);
 
   /** Kick a warmup window at a position (fire-and-forget; errors ignored here). */
   const warmAt = useCallback((secs, { force = false } = {}) => {
@@ -156,9 +189,17 @@ export default function PlayerPage() {
         setWarm(st);
         if (st.state === 'ready') {
           resumeTarget.current = startPos || 0; // applied on first canplay
+          playableRef.current = st.containerPlayable !== false;
+          const { mode, q } = resolveMode(st.containerPlayable !== false);
           setPhase('ready');
-          setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current), fileIndex: fileIdxRef.current }));
-          setSrcKey((k) => k + 1);
+          if (mode === 'transcode') {
+            setTranscodeBoth(q);
+            attachTranscode(startPos || 0);
+          } else {
+            setTranscodeBoth(null);
+            setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current), fileIndex: fileIdxRef.current }));
+            setSrcKey((k) => k + 1);
+          }
           return; // video 'canplay' event calls applyReady
         }
         if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS) {
@@ -197,11 +238,17 @@ export default function PlayerPage() {
         } else if (type === 'torrent') {
           // Everything is best-effort: details may 404 after a restart/reap,
           // the library always has our magnet though.
-          const [details, lib, hist] = await Promise.all([
+          const [tc, details, lib, hist] = await Promise.all([
+            getTranscodeStatus().catch(() => null),
             getTorrentDetails(identifier).catch(() => null),
             getLibrary().catch(() => ({ items: [] })),
             getHistoryEntry(historyKey).catch(() => null),
           ]);
+          if (tc) {
+            tcAvailRef.current = !!tc.available;
+            if (tc.defaultQuality) tcDefaultRef.current = tc.defaultQuality;
+            setTcStatus(tc);
+          }
           if (cancelled || generation.current !== gen) return;
           const item = lib.items?.find((i) => i.infoHash === identifier);
           magnetRef.current = magnetRef.current || item?.magnet || null;
@@ -264,7 +311,8 @@ export default function PlayerPage() {
   // ---------- Progress saving ----------
   const persist = useCallback(() => {
     const v = videoRef.current;
-    if (!v || !v.duration) return;
+    const dur = durRef.current || v?.duration || 0; // fMP4 yields Infinity; durRef knows the truth
+    if (!v || !dur || !isFinite(dur)) return;
     saveHistory({
       key: historyKey,
       title: info.title,
@@ -272,7 +320,7 @@ export default function PlayerPage() {
       source: type === 'archive'
         ? { type: 'archive', identifier, fileUrl: info.src, fileIndex: startIndex }
         : { type: 'torrent', infoHash: identifier, fileIndex: info.fileIndex ?? startIndex, fileName: info.subtitle },
-      position: v.currentTime, duration: v.duration,
+      position: v.currentTime, duration: dur,
       extra: info.extra,
     }).catch(() => {});
   }, [historyKey, info, type, identifier, startIndex]);
@@ -372,17 +420,48 @@ export default function PlayerPage() {
   // Refined: snap the playhead, show the buffering state right away, and
   // re-arm the server's ~1-minute window AT the target so playback resumes
   // as soon as that minute is buffered (fast-forward behaves the same).
+  /** Switch rendition / source mode at the current time (quality menu). */
+  const pickQuality = useCallback((pref) => {
+    setQualityPref(pref);
+    qualityRef.current = pref;
+    localStorage.setItem('sb_quality', pref);
+    setTcMenu(false);
+    if (type !== 'torrent') return;
+    const { mode, q } = resolveMode(playableRef.current);
+    const current = videoRef.current?.currentTime || curTimeRef.current || 0;
+    if (mode === 'transcode') {
+      if (transcodeRef.current === q) return; // same rendition already
+      setTranscodeBoth(q);
+      warmAt(current, { force: true });
+      attachTranscode(current);
+    } else if (transcodeRef.current) {
+      // Back to the original file
+      setTranscodeBoth(null);
+      warmAt(current, { force: true });
+      resumeTarget.current = current;
+      setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current) }));
+      setSrcKey((k) => k + 1);
+      setBuffering(true);
+    }
+  }, [type, attachTranscode, warmAt, identifier]);
+
   const performSeek = useCallback((secs) => {
     const v = videoRef.current;
     if (!v || !v.duration) return;
-    const target = Math.max(0, Math.min(secs, v.duration - 0.1));
-    try { v.currentTime = target; } catch { /* fine */ }
+    const target = Math.max(0, Math.min(secs, (v.duration === Infinity ? durRef.current || v.duration : v.duration) - 0.1));
     setCurTime(target);
     curTimeRef.current = target;
     setBufferedEnd(0);
     setBuffering(true);
-    if (type === 'torrent') warmAt(target, { force: true });
-  }, [type, warmAt]);
+    if (type === 'torrent') {
+      warmAt(target, { force: true });
+      if (transcodeRef.current) {
+        attachTranscode(target); // ffmpeg restarts at -ss target; clock stays absolute
+        return;
+      }
+    }
+    try { v.currentTime = target; } catch { /* fine */ }
+  }, [type, warmAt, attachTranscode]);
 
   const seekTo = useCallback((frac) => {
     const v = videoRef.current;
@@ -597,13 +676,23 @@ export default function PlayerPage() {
             onEnded={() => { setPlaying(false); setUiVisible(true); persist(); }}
             onLoadedMetadata={() => {
               const d = videoRef.current?.duration || 0;
-              setDuration(d);
-              if (d > 0) durRef.current = d;
+              if (transcodeRef.current) {
+                // fMP4 reports Infinity — rely on the real duration learned
+                // from history/metadata for the scrubber math
+                setDuration(durRef.current || (isFinite(d) ? d : 0));
+              } else {
+                setDuration(d);
+                if (d > 0) durRef.current = d;
+              }
             }}
             onDurationChange={() => {
               const d = videoRef.current?.duration || 0;
-              setDuration(d);
-              if (d > 0) durRef.current = d;
+              if (transcodeRef.current) {
+                setDuration(durRef.current || (isFinite(d) ? d : 0));
+              } else {
+                setDuration(d);
+                if (d > 0) durRef.current = d;
+              }
             }}
             onSeeking={() => setBuffering(true)}
             onError={() => {
@@ -666,8 +755,11 @@ export default function PlayerPage() {
               <div className="spinner" />
               <div className="warm-title">{info.title}</div>
               <div className="warm-line">{warmLine || 'Preparing stream…'}</div>
-              {warm?.containerPlayable === false && (
-                <div className="warm-warn">⚠ This file is {warm.fileName?.split('.').pop()?.toUpperCase()} — browsers may not decode it (MKV/HEVC). If it stays black, use an MP4/H.264 source.</div>
+              {warm?.containerPlayable === false && !tcAvailRef.current && (
+                <div className="warm-warn">
+                  ⚠ This file is {warm.fileName?.split('.').pop()?.toUpperCase()} — browsers can't decode it (MKV/HEVC).
+                  Install <code>ffmpeg</code> on the server to play it transcoded, or use an MP4/H.264 source.
+                </div>
               )}
               <div className="warm-actions">
                 {warmError && (
@@ -694,6 +786,36 @@ export default function PlayerPage() {
               onClick={() => { performSeek(0.01); setResumeNote(null); }}>
               Start over
             </button>
+          </div>
+        )}
+
+        {tcMenu && type === 'torrent' && (
+          <div className="sub-menu" onClick={(e) => e.stopPropagation()}>
+            <h5>Quality</h5>
+            <button className={`sub-item ${qualityPref === 'auto' ? 'active' : ''}`} onClick={() => pickQuality('auto')}>
+              ✨ Auto <span className="q-note">source when playable, 720p transcode otherwise</span>
+            </button>
+            <button className={`sub-item ${qualityPref === 'source' ? 'active' : ''}`} onClick={() => pickQuality('source')}>
+              🎞️ Source <span className="q-note">original file, untouched</span>
+            </button>
+            <div style={{ borderTop: '1px solid #2a3242', margin: '8px 0 4px' }} />
+            {(tcStatus?.presets || [{ quality: '1080p' }, { quality: '720p' }, { quality: '480p' }, { quality: '360p' }]).map((p) => (
+              <button
+                key={p.quality}
+                className={`sub-item ${qualityPref === p.quality ? 'active' : ''}`}
+                disabled={!tcStatus?.available}
+                onClick={() => pickQuality(p.quality)}
+              >
+                {p.quality}
+                {p.note === 'recommended' && <span className="q-note">· recommended</span>}
+                {p.note === 'heavy' && <span className="q-note">· CPU heavy on laptops</span>}
+              </button>
+            ))}
+            {!tcStatus?.available && (
+              <div className="q-unavail">
+                Lower qualities need <strong>ffmpeg</strong> on the server — on Ubuntu: <code>sudo apt install ffmpeg</code>, then restart.
+              </div>
+            )}
           </div>
         )}
 
@@ -776,7 +898,17 @@ export default function PlayerPage() {
                 {isDone && <span className="chip green" style={{ marginLeft: 8 }}>✓</span>}
               </span>
               <span style={{ flex: 1 }} />
-              <button className={`icon-btn ctrl ${subMenu ? 'on' : ''}`} onClick={() => { setSubMenu((s) => !s); pokeUi(); }} title="Captions">
+              {type === 'torrent' && (
+                <button
+                  className={`icon-btn ctrl ${tcMenu ? 'on' : ''}`}
+                  onClick={() => { setTcMenu((s) => !s); setSubMenu(false); pokeUi(); }}
+                  title="Quality"
+                >
+                  <Settings />
+                  <span className="q-chip">{transcodeQ || (qualityPref === 'source' ? 'HD' : 'Auto')}</span>
+                </button>
+              )}
+              <button className={`icon-btn ctrl ${subMenu ? 'on' : ''}`} onClick={() => { setSubMenu((s) => !s); setTcMenu(false); pokeUi(); }} title="Captions">
                 <MessageSquare />
               </button>
               <button className="icon-btn ctrl" onClick={togglePip} title="Picture in picture">
