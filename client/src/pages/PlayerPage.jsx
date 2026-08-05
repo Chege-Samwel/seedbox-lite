@@ -7,7 +7,7 @@ import {
 import {
   getArchiveItem, getSubtitleProxyUrl, getArchiveStreamProxyUrl, getTorrentStreamUrl, getTorrentDetails,
   getTorrentSubtitleUrl, getHistoryEntry, saveHistory, getLibrary, sendStreamHeartbeat,
-  startWarmup, getWarmupStatus, getTranscodeStatus, getTranscodeUrl,
+  startWarmup, getTranscodeStatus, getTranscodeUrl,
 } from '../services/api';
 import { formatTime, formatBytes, formatSpeed } from '../utils/format';
 import { useToast } from '../hooks/useToast';
@@ -27,6 +27,19 @@ const WARM_POLL_STALLED_MS = 4000; // dead swarm → poll gently (and cooler)
 const WARM_GIVE_UP_MS = 150000; // 2.5 min of polling before offering manual retry
 const RECONNECT_MAX = 8; // consecutive auto-reconnects before falling back to the warmup gate
 const STALL_WATCHDOG_MS = 15000; // mid-play starve this long ⇒ reattach at playhead
+const EARLY_PLAY_MIN_BYTES = 2 * 1024 * 1024; // contiguous bytes before "Play now" unlocks
+
+/** Is a time position already covered by buffered ranges? (avoids flashing
+ *  the buffering overlay for instant in-buffer seeks) */
+function isCovered(v, t) {
+  try {
+    if (!v || !v.buffered || !v.buffered.length) return false;
+    for (let i = 0; i < v.buffered.length; i++) {
+      if (t >= v.buffered.start(i) - 0.25 && t <= v.buffered.end(i) + 0.25) return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
 
 export default function PlayerPage() {
   const { source } = useParams();
@@ -82,10 +95,18 @@ export default function PlayerPage() {
   const [warm, setWarm] = useState(null); // last warmup status payload
   const [warmError, setWarmError] = useState(null);
   const [connNote, setConnNote] = useState(null); // auto-reconnect status line for overlays
+  // Autoplay-with-sound can be denied after the warmup gate (the user's
+  // click gesture expired while buffering). We then play muted and show a
+  // one-tap "sound is off" hint instead of silently staying silent.
+  const [soundBlocked, setSoundBlocked] = useState(false);
+  const soundBlockedRef = useRef(false);
+  const setSoundBlockedBoth = useCallback((v) => { soundBlockedRef.current = v; setSoundBlocked(v); }, []);
   const phaseRef = useRef(phase);
   useEffect(() => { phaseRef.current = phase; }, [phase]);
   const warmRef = useRef(null); // latest warmup payload, for timers/errors
   const setWarmBoth = (st) => { warmRef.current = st; setWarm(st); };
+  const earlyPlayRef = useRef(false); // user started playback before the full warm window
+  const warmStartPosRef = useRef(0);  // position the warmup window is centered on
 
   // Quality / transcode (torrent sources only)
   const [tcMenu, setTcMenu] = useState(false);
@@ -124,6 +145,20 @@ export default function PlayerPage() {
   const resumeTarget = useRef(0); // position to seek to once the gate opens
 
   // ---------- Warming helpers ----------
+  /** Play with sound; if the browser refuses (the warmup gate consumed the
+   *  user gesture), fall back to muted autoplay + a one-tap audio hint. */
+  const safePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.play().catch((err) => {
+      const blocked = !!(err && (err.name === 'NotAllowedError' || /autoplay|user gesture|play\(\)/i.test(err.message || '')));
+      if (!blocked || v.muted) return;
+      v.muted = true;
+      setSoundBlockedBoth(true);
+      v.play().catch(() => { /* controls remain available */ });
+    });
+  }, [setSoundBlockedBoth]);
+
   const applyReady = useCallback((v, startPos) => {
     if (!v) return;
     // Transcoded streams are already positioned at startPos via -ss/-output_ts_offset
@@ -134,24 +169,24 @@ export default function PlayerPage() {
         pendingSeek.current = startPos;
       }
     }
-    v.play?.().catch(() => { /* autoplay may need a tap — controls are there */ });
+    safePlay();
     if (startPos > 10) {
       setResumeNote(startPos);
       setTimeout(() => setResumeNote((n) => (n === startPos ? null : n)), 6000);
     }
-  }, []);
+  }, [safePlay]);
 
   // ---------- Transcode (quality variants) ----------
   const setTranscodeBoth = (q) => { transcodeRef.current = q; setTranscodeQ(q); };
 
-  const resolveMode = (playable) => {
+  const resolveMode = useCallback((playable) => {
     const pref = qualityRef.current;
     const avail = !!tcAvailRef.current;
     if (pref === 'source') return { mode: 'direct' };
     if (avail && pref !== 'auto') return { mode: 'transcode', q: pref };
     if (avail && !playable) return { mode: 'transcode', q: tcDefaultRef.current || '720p' };
     return { mode: 'direct' };
-  };
+  }, []);
 
   /** Point the <video> at a transcode rendition rendering from t (absolute film secs). */
   const attachTranscode = useCallback((tSecs = 0) => {
@@ -243,6 +278,8 @@ export default function PlayerPage() {
   const beginWarmup = useCallback(async (gen, magnet, fileIndex, startPos) => {
     setPhase('warming');
     setWarmError(null);
+    earlyPlayRef.current = false;
+    warmStartPosRef.current = startPos || 0;
     warmStartedAt.current = Date.now();
     const pollOnce = async () => {
       try {
@@ -261,6 +298,12 @@ export default function PlayerPage() {
         }
         setWarmBoth(st);
         if (st.state === 'ready') {
+          // The user already started playback early (Play now button) — the
+          // stream is live and the governor owns the window, so don't
+          // re-attach and restart the <video>; just keep status fresh.
+          if (earlyPlayRef.current && phaseRef.current !== 'warming') {
+            return;
+          }
           resumeTarget.current = startPos || 0; // applied on first canplay
           playableRef.current = st.containerPlayable !== false;
           playedAnyRef.current = false; // this attach is unproven until it plays
@@ -293,7 +336,32 @@ export default function PlayerPage() {
       }
     };
     await pollOnce();
-  }, [identifier]);
+  }, [identifier, attachTranscode, resolveMode]);
+
+  /** Start playback with the data already buffered instead of waiting for the
+   *  whole ~1-minute warm window ("Play now" in the warmup gate). Direct-
+   *  playable containers only; the buffer keeps growing while playing. */
+  const playEarly = useCallback(() => {
+    if (type !== 'torrent') return;
+    const st = warmRef.current || {};
+    if (st.poisoned || st.containerPlayable === false || (st.bufferedFromPos || 0) < EARLY_PLAY_MIN_BYTES) return;
+    earlyPlayRef.current = true;
+    const startPos = warmStartPosRef.current;
+    resumeTarget.current = startPos;
+    playableRef.current = true;
+    playedAnyRef.current = false; // this attach is unproven until it plays
+    const { mode, q } = resolveMode(true);
+    setPhase('ready');
+    if (mode === 'transcode') {
+      setTranscodeBoth(q);
+      attachTranscode(startPos);
+    } else {
+      setTranscodeBoth(null);
+      setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current), fileIndex: fileIdxRef.current }));
+      setSrcKey((k) => k + 1);
+    }
+    setConnNote(null);
+  }, [type, identifier, attachTranscode, resolveMode]);
 
   // ---------- Load source ----------
   useEffect(() => {
@@ -475,9 +543,16 @@ export default function PlayerPage() {
   const togglePlay = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) { v.play(); setFlash('play'); } else { v.pause(); setFlash('pause'); }
+    if (soundBlockedRef.current) {
+      // First tap while sound-blocked restores audio instead of toggling
+      v.muted = false;
+      setMuted(false);
+      setSoundBlockedBoth(false);
+      v.play().catch(() => {});
+      setFlash('play');
+    } else if (v.paused) { v.play(); setFlash('play'); } else { v.pause(); setFlash('pause'); }
     setTimeout(() => setFlash(null), 500);
-  }, []);
+  }, [setSoundBlockedBoth]);
 
   const togglePip = useCallback(async () => {
     const v = videoRef.current;
@@ -534,7 +609,7 @@ export default function PlayerPage() {
       setSrcKey((k) => k + 1);
       setBuffering(true);
     }
-  }, [type, attachTranscode, warmAt, identifier]);
+  }, [type, attachTranscode, warmAt, identifier, resolveMode]);
 
   const performSeek = useCallback((secs) => {
     const v = videoRef.current;
@@ -543,7 +618,7 @@ export default function PlayerPage() {
     setCurTime(target);
     curTimeRef.current = target;
     setBufferedEnd(0);
-    setBuffering(true);
+    if (!isCovered(v, target)) setBuffering(true);
     if (type === 'torrent') {
       warmAt(target, { force: true });
       if (transcodeRef.current) {
@@ -575,7 +650,7 @@ export default function PlayerPage() {
       uiVisibleRef.current = false;
       if (videoRef.current && !videoRef.current.paused && !dragging.current) setUiVisible(false);
     }, 2800);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   const uiVisibleRef = useRef(uiVisible);
   useEffect(() => { uiVisibleRef.current = uiVisible; }, [uiVisible]);
@@ -650,17 +725,24 @@ export default function PlayerPage() {
         case 'ArrowRight': performSeek((v.currentTime || 0) + 10); break;
         case 'ArrowLeft': performSeek(Math.max(0, (v.currentTime || 0) - 10)); break;
         case 'f': toggleFullscreen(); break;
-        case 'm': setMuted((m) => { v.muted = !m; return !m; }); break;
+        case 'm': { const nm = !v.muted; v.muted = nm; setMuted(nm); if (!nm) setSoundBlockedBoth(false); break; }
         default: return;
       }
       pokeUi();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [togglePlay, toggleFullscreen, pokeUi, performSeek]);
+  }, [togglePlay, toggleFullscreen, pokeUi, performSeek, setSoundBlockedBoth]);
 
-  // Tap handling: single = toggle UI, double = fullscreen
+  // Tap handling: single = toggle UI, double = fullscreen. A tap while
+  // sound-blocked restores audio first (the autoplay fallback muted it).
   const onTapStage = () => {
+    if (soundBlockedRef.current) {
+      const v = videoRef.current;
+      if (v) { v.muted = false; setMuted(false); setSoundBlockedBoth(false); v.play().catch(() => {}); }
+      pokeUi();
+      return;
+    }
     const now = Date.now();
     if (now - lastTap.current < 320) { toggleFullscreen(); setUiVisible(true); }
     else { uiVisible ? (videoRef.current?.paused ? null : setUiVisible(false)) : setUiVisible(true); pokeUi(); }
@@ -748,6 +830,9 @@ export default function PlayerPage() {
             src={info.src}
             controls={isIos} /* iOS handles custom controls poorly */
             playsInline
+            // metadata-only preload: fetch the moov header, never the whole
+            // file (the server's warmup window owns what gets downloaded).
+            preload="metadata"
             // NB: no crossOrigin="anonymous" — several archive.org edge
             // nodes omit CORS headers, which turns that attribute into a
             // hard playback death-sentence (ERR_FAILED). Without it the
@@ -788,7 +873,7 @@ export default function PlayerPage() {
               }
               if (v && wantPlayRef.current) {
                 wantPlayRef.current = false;
-                v.play?.().catch(() => { /* user can press play */ });
+                safePlay();
               }
               if (type === 'torrent' && phase === 'ready') {
                 setPhase('play');
@@ -819,7 +904,10 @@ export default function PlayerPage() {
                 if (d > 0) durRef.current = d;
               }
             }}
-            onSeeking={() => setBuffering(true)}
+            onSeeking={() => {
+              const vv = videoRef.current;
+              if (!isCovered(vv, vv?.currentTime || 0)) setBuffering(true);
+            }}
             onError={() => {
               if (type === 'archive') {
                 // Direct CDN media can be CORS-blocked by some archive.org
@@ -905,6 +993,12 @@ export default function PlayerPage() {
                     <RotateCw size={14} /> Retry now
                   </button>
                 )}
+                {!warmError && warm?.containerPlayable !== false && !warm?.poisoned
+                  && (warm?.bufferedFromPos || 0) >= EARLY_PLAY_MIN_BYTES && (
+                  <button className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); playEarly(); }}>
+                    <Play size={14} /> Play now · buffered {formatBytes(warm.bufferedFromPos)}
+                  </button>
+                )}
                 <button className="btn btn-dark btn-sm" onClick={goBack}>Back</button>
               </div>
             </div>
@@ -937,6 +1031,23 @@ export default function PlayerPage() {
               Start over
             </button>
           </div>
+        )}
+
+        {/* Autoplay-with-sound was denied after the warmup gate — video is
+            playing muted; one tap restores audio. */}
+        {soundBlocked && !loading && info.src && (
+          <button
+            className="sound-hint"
+            onClick={(e) => {
+              e.stopPropagation();
+              const v = videoRef.current;
+              if (v) { v.muted = false; setMuted(false); v.play().catch(() => {}); }
+              setSoundBlockedBoth(false);
+              pokeUi();
+            }}
+          >
+            <VolumeX size={16} /> Tap for sound
+          </button>
         )}
 
         {tcMenu && type === 'torrent' && (

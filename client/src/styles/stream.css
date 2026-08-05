@@ -324,6 +324,13 @@ button { font-family: inherit; }
 }
 .warm-line.conn-note { border-radius: 10px; margin-top: 4px; }
 .buffer-hint { margin: 8px; padding-top: 8px; border-top: 1px solid #2a3242; font-size: 11px; color: var(--text-faint); line-height: 1.4; }
+.sound-hint {
+  position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px;
+  background: rgba(15, 18, 26, 0.92); border: 1px solid #3d4a63; color: var(--text);
+  font-size: 13px; cursor: pointer; box-shadow: var(--shadow); animation: fadein 0.25s ease;
+}
+.sound-hint:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ─── Player: custom controls ─── */
 .player-shell.ui-hidden { cursor: none; }
