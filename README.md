@@ -128,11 +128,15 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 ## 🚀 Quick Start
 
+> **Fresh download or clone?** You don't need a manual `npm install` anymore —
+> `npm start` and `npm run dev` check for missing dependencies and install
+> them automatically on first run (root, server, client). Just run the command.
+
 ### Production (one command, one port — recommended for a home server)
 
 ```bash
-npm run install-all
-npm start        # builds the client AND serves UI+API together on :3000
+npm start        # installs deps on first run, builds the client,
+                 # serves UI+API together on :3000
 ```
 
 - Open **http://localhost:3000** — the UI, API, and streams share one origin (no CORS, no `VITE_API_BASE_URL` needed).
@@ -140,6 +144,26 @@ npm start        # builds the client AND serves UI+API together on :3000
   Lost it or nothing printed? Recovery: **`npm run tickets`** (list codes) ·
   **`npm run new-ticket`** (create one) · or log in and use **/admin** with your
   `ADMIN_PASSWORD`. See [DEPLOYMENT.md](DEPLOYMENT.md) for tunnels & free tiers.
+
+### Development (live reload — API on :3000, UI on :5173)
+
+```bash
+npm run dev      # installs deps on first run, then runs server + Vite dev server
+```
+
+- Open **http://localhost:5173** — Vite proxies `/api` to the server for you.
+
+### Small / laptop hosts (stay cool)
+
+Add these on the same command line to cap memory, CPU and torrent count:
+
+```bash
+LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
+```
+
+- `LITE_MODE=true` → smaller buffer windows, fewer connections, RSS cap ~420MB
+- `DISABLE_TRANSCODE=true` → no ffmpeg (the biggest CPU/heat source)
+- `MAX_ACTIVE_TORRENTS=2` → never load more than 2 torrents at once
 
 ### Using Docker
 

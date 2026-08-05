@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "description": "A lightweight torrent streaming application",
   "scripts": {
+    "predev": "node scripts/ensure-deps.js",
+    "prestart": "node scripts/ensure-deps.js",
     "dev": "concurrently -n server,client -c green,cyan \"npm run server\" \"npm run client\"",
     "server": "cd server && node index.js",
     "client": "cd client && npm run dev",
