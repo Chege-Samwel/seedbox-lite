@@ -8,7 +8,7 @@ export default defineConfig(({ mode }) => {
   // Guard the classic footgun: a template value baked into the bundle
   // silently breaks every API call in production.
   if (mode === 'production' && env.VITE_API_BASE_URL && /[<>]/.test(env.VITE_API_BASE_URL)) {
-    console.warn(`\n⚠️  VITE_API_BASE_URL ("${env.VITE_API_BASE_URL}") still looks like an unfilled template —\n    leave it EMPTY for same-origin serving, or set a real public https URL for split hosting.\n    (The app will still self-heal at runtime by falling back to same-origin.)\n`);
+    console.warn(`\n⚠️  VITE_API_BASE_URL ("${env.VITE_API_BASE_URL}") still looks like an unfilled template —\n    leave it EMPTY for same-origin serving, or set a real public https URL for[...]`)
   }
   
   return {
@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
     server: {
       // Accept any Host header in dev (tunnels, sandbox previews, LAN IPs).
       allowedHosts: true,
+      host: true,
       proxy: {
         "/api": {
           target: apiBaseUrl,
