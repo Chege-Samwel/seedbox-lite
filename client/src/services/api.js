@@ -22,11 +22,15 @@ export const apiBase = () => {
   if (saved !== null) return saved;
   return BAKED_IS_TEMPLATE ? '' : BAKED_BASE;
 };
-const setBaseOverride = (b) => {
-  if (b) localStorage.setItem(OVERRIDE_KEY, b);
+/** Point the whole app at a different Heiken server (split hosting with a
+ *  changing tunnel URL). Empty string clears the override. */
+export const setApiBaseOverride = (b) => {
+  const clean = String(b || '').trim().replace(/\/+$/, '');
+  if (clean) localStorage.setItem(OVERRIDE_KEY, clean);
   else localStorage.removeItem(OVERRIDE_KEY);
   window.dispatchEvent(new Event('sb_api_base_changed'));
 };
+const setBaseOverride = (b) => { setApiBaseOverride(b); };
 const TOKEN_KEY = 'sb_session_token';
 const CONSENT_KEY = 'sb_consent'; // 'granted' | 'denied'
 
@@ -153,8 +157,10 @@ export async function adminApi(path, adminKey, { method = 'GET', body } = {}) {
   return data;
 }
 
-// ---------- Browse (Internet Archive) ----------
-export const getHome = () => apiFetch('/api/browse/home', { timeoutMs: 25000, retries: 2 });
+// ---------- Browse (RSS home + Internet Archive) ----------
+export const getHome = (refresh = false) => apiFetch(`/api/browse/home${refresh ? '?refresh=1' : ''}`, { timeoutMs: 30000, retries: 2 });
+export const getRssItem = (infoHash) => apiFetch(`/api/rss/item/${encodeURIComponent(infoHash)}`, { timeoutMs: 25000, retries: 1 });
+export const getRssFeeds = () => apiFetch('/api/rss/feeds', { timeoutMs: 12000, retries: 1 });
 export const searchArchive = (q, page = 1) =>
   apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000, retries: 1 });
 export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });

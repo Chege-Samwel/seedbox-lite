@@ -1,18 +1,27 @@
 {
-  "name": "seedbox-lite",
+  "name": "heiken",
   "version": "1.0.0",
-  "description": "A lightweight torrent streaming application",
+  "description": "Heiken \u2014 personal streaming cinema",
   "scripts": {
+    "predev": "node scripts/ensure-deps.js",
+    "prestart": "node scripts/ensure-deps.js",
     "dev": "concurrently -n server,client -c green,cyan \"npm run server\" \"npm run client\"",
     "server": "cd server && node index.js",
     "client": "cd client && npm run dev",
     "install-all": "npm install && cd server && npm install && cd ../client && npm install",
     "build": "cd client && npm run build",
-    "start": "cd client && npm run build && cd ../server && NODE_ENV=production node index.js",
+    "start": "node scripts/serve.js",
     "tickets": "cd server && node bin/tickets.js",
-    "new-ticket": "cd server && node bin/tickets.js --new Recovery 365"
+    "new-ticket": "cd server && node bin/tickets.js --new Recovery 365",
+    "apk": "./scripts/build-apk.sh",
+    "serve": "node scripts/serve.js",
+    "ngrok": "ngrok http 3000"
   },
-  "keywords": ["torrent", "streaming", "webtorrent"],
+  "keywords": [
+    "torrent",
+    "streaming",
+    "webtorrent"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {

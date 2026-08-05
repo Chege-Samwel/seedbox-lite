@@ -16,18 +16,27 @@ export default function SearchPage() {
   const doSearch = useCallback(async (term) => {
     if (!term.trim()) { setArchiveRes(null); setMetaRes(null); setLibRes([]); return; }
     setBusy(true);
-    const [arch, meta, lib] = await Promise.allSettled([
-      searchArchive(term), searchMetadata(term, 'any'), getLibrary(),
-    ]);
-    setArchiveRes(arch.status === 'fulfilled' ? arch.value : { results: [], error: 'Archive unreachable' });
-    setMetaRes(meta.status === 'fulfilled' ? meta.value : { found: false });
-    if (lib.status === 'fulfilled') {
-      const needle = term.toLowerCase();
-      setLibRes(lib.value.items.filter((i) =>
-        (i.title || '').toLowerCase().includes(needle) || (i.showName || '').toLowerCase().includes(needle)
-      ));
-    }
-    setBusy(false);
+    // Resolve independently: pipeline + archive results render as soon as
+    // they arrive; the external metadata lookup settles on its own and must
+    // not block them (a blocked provider used to stall the whole search).
+    let coreDone = 0;
+    const markCore = () => { if (++coreDone >= 2) setBusy(false); };
+    getLibrary()
+      .then((lib) => {
+        const needle = term.toLowerCase();
+        setLibRes((lib?.items || []).filter((i) =>
+          (i.title || '').toLowerCase().includes(needle) || (i.showName || '').toLowerCase().includes(needle)
+        ));
+      })
+      .catch(() => setLibRes([]))
+      .finally(markCore);
+    searchArchive(term)
+      .then((v) => setArchiveRes(v))
+      .catch(() => setArchiveRes({ results: [], error: 'Archive unreachable' }))
+      .finally(markCore);
+    searchMetadata(term, 'any')
+      .then((v) => setMetaRes(v))
+      .catch(() => setMetaRes({ found: false }));
   }, []);
 
   useEffect(() => {

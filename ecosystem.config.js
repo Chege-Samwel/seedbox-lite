@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'seedbox-backend',
+      name: 'heiken-backend',
       script: 'index.js',
       cwd: './server',
       env: {
@@ -21,7 +21,7 @@ module.exports = {
       min_uptime: '10s'
     },
     {
-      name: 'seedbox-frontend',
+      name: 'heiken-frontend',
       script: 'serve',
       args: '-s dist -l 5174 -n',
       cwd: './client',

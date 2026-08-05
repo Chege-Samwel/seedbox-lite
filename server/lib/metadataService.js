@@ -143,7 +143,10 @@ function normalizeOmdb(r) {
 // ---------- Search ----------
 
 /**
- * Look up artwork/metadata for a keyword. Tries providers in order.
+ * Look up artwork/metadata for a keyword. All providers are queried in
+ * parallel and the first useful answer wins; the whole lookup is capped at
+ * ~10s so an unreachable provider can never stall a search for 30s+ (the old
+ * sequential TMDB→TVMaze→iTunes→OMDb chain hung 8s per provider).
  * type: 'movie' | 'show' | 'any'
  */
 async function lookup(queryInput, { type = 'any', year = null } = {}) {
@@ -151,64 +154,66 @@ async function lookup(queryInput, { type = 'any', year = null } = {}) {
   const query = String(queryInput).trim();
   if (!query) return { found: false };
 
+  const attempts = [];
+
   // 1) TMDB
   if (TMDB_KEY) {
-    try {
+    attempts.push((async () => {
       const tmdbType = type === 'movie' ? 'movie' : type === 'show' ? 'tv' : 'multi';
       const data = await cachedJson(
         `https://api.themoviedb.org/3/search/${tmdbType}?api_key=${TMDB_KEY}&language=en-US&page=1&include_adult=false&query=${encodeURIComponent(query)}${year ? `&year=${year}&first_air_date_year=${year}` : ''}`
       );
       const list = (data.results || []).filter((r) => r.media_type !== 'person');
-      if (list.length) {
-        const best = list[0];
-        return { found: true, best: best.media_type === 'tv' || best.first_air_date ? normalizeTmdbTv(best) : normalizeTmdbMovie(best), results: list.slice(0, 10).map((r) => (r.media_type === 'tv' || r.first_air_date ? normalizeTmdbTv(r) : normalizeTmdbMovie(r))) };
-      }
-    } catch (err) {
-      console.warn(`⚠️ TMDB lookup failed: ${err.message}`);
-    }
+      if (!list.length) return null;
+      const best = list[0];
+      return { found: true, best: best.media_type === 'tv' || best.first_air_date ? normalizeTmdbTv(best) : normalizeTmdbMovie(best), results: list.slice(0, 10).map((r) => (r.media_type === 'tv' || r.first_air_date ? normalizeTmdbTv(r) : normalizeTmdbMovie(r))) };
+    })().catch((err) => { console.warn(`⚠️ TMDB lookup failed: ${err.message}`); return null; }));
   }
 
   // 2) TVMaze (TV)
   if (type === 'show' || type === 'any') {
-    try {
+    attempts.push((async () => {
       const data = await cachedJson(`https://api.tvmaze.com/search/shows?q=${encodeURIComponent(query)}`);
-      if (Array.isArray(data) && data.length) {
-        const shows = data.filter((d) => d.show).sort((a, b) => (b.score || 0) - (a.score || 0));
-        if (shows.length) {
-          return { found: true, best: normalizeTvmazeShow(shows[0].show), results: shows.slice(0, 10).map((d) => normalizeTvmazeShow(d.show)) };
-        }
-      }
-    } catch (err) {
-      console.warn(`⚠️ TVMaze lookup failed: ${err.message}`);
-    }
+      if (!Array.isArray(data) || !data.length) return null;
+      const shows = data.filter((d) => d.show).sort((a, b) => (b.score || 0) - (a.score || 0));
+      if (!shows.length) return null;
+      return { found: true, best: normalizeTvmazeShow(shows[0].show), results: shows.slice(0, 10).map((d) => normalizeTvmazeShow(d.show)) };
+    })().catch((err) => { console.warn(`⚠️ TVMaze lookup failed: ${err.message}`); return null; }));
   }
 
   // 3) iTunes
-  try {
+  attempts.push((async () => {
     const media = type === 'show' ? 'tvShow' : 'movie';
     const data = await cachedJson(
       `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=${media}&limit=10${year ? '' : ''}&country=US`
     );
-    if (data.results && data.results.length) {
-      return { found: true, best: normalizeItunes(data.results[0]), results: data.results.map(normalizeItunes) };
-    }
-  } catch (err) {
-    console.warn(`⚠️ iTunes lookup failed: ${err.message}`);
-  }
+    if (!data.results || !data.results.length) return null;
+    return { found: true, best: normalizeItunes(data.results[0]), results: data.results.map(normalizeItunes) };
+  })().catch((err) => { console.warn(`⚠️ iTunes lookup failed: ${err.message}`); return null; }));
 
   // 4) OMDb
-  try {
+  attempts.push((async () => {
     const data = await cachedJson(
       `https://www.omdbapi.com/?apikey=${OMDB_KEY}&t=${encodeURIComponent(query)}${year ? `&y=${year}` : ''}&type=${type === 'show' ? 'series' : 'movie'}&plot=short`
     );
-    if (data && data.Response === 'True') {
-      return { found: true, best: normalizeOmdb(data), results: [normalizeOmdb(data)] };
-    }
-  } catch (err) {
-    console.warn(`⚠️ OMDb lookup failed: ${err.message}`);
-  }
+    if (!data || data.Response !== 'True') return null;
+    return { found: true, best: normalizeOmdb(data), results: [normalizeOmdb(data)] };
+  })().catch((err) => { console.warn(`⚠️ OMDb lookup failed: ${err.message}`); return null; }));
 
-  return { found: false };
+  if (!attempts.length) return { found: false };
+
+  // First provider that finds something wins; hard cap at 10s overall.
+  const firstSuccess = await new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    for (const p of attempts) {
+      p.then((v) => { if (v && v.found) finish(v); }).catch(() => {});
+    }
+    const t = setTimeout(() => finish(null), 10000);
+    if (typeof t.unref === 'function') t.unref();
+  });
+
+  return firstSuccess || { found: false };
 }
 
 // ---------- TV show structure (seasons + episodes) ----------

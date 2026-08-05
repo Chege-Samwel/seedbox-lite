@@ -81,6 +81,48 @@ keep `TRANSCODE_MAX_SESSIONS=1` on 1 vCPU.
 
 Perfectly fine for 3–5 users — see "Cooling it down" to make it quiet.
 
+### C2. "Host BOTH the UI and the engine in one place" (the honest answer)
+
+Short version: **`npm start` on any always-on box** serves the UI, the API
+and the torrent engine from one port — that is "both here". Netlify (and
+Render/Railway free tiers) **cannot** run the engine, no matter how legal
+the content is, because serverless functions have no UDP sockets, no
+persistent disk, and a 10–26s request cap — a torrent client needs all
+three. So "both in one place" means one of these:
+
+1. **Your own machine at home + Cloudflare Tunnel (free, no port-forwarding).**
+   ```bash
+   # one command: starts the app (cool profile) AND opens a public URL
+   ./scripts/tunnel.sh
+   # → prints https://<random>.trycloudflare.com — open it or share it
+   ```
+   The script uses the cool profile for your laptop and stops everything on
+   Ctrl+C. The quick-tunnel URL changes every run; for a **stable URL** you
+   (or your family) can always find, set up a named tunnel once:
+   ```bash
+   cloudflared tunnel login                     # link your Cloudflare account
+   cloudflared tunnel create seedbox            # creates a tunnel
+   # add DNS for a subdomain of a domain you own, e.g. seedbox.example.com:
+   cloudflared tunnel route dns seedbox seedbox.example.com
+   # then instead of the quick tunnel, run:
+   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start &
+   cloudflared tunnel run seedbox --url http://localhost:3000
+   ```
+   Your ISP connection serves the streams (home fibre up is plenty for
+   3–5 users). Cost: $0. This is the closest thing to "host both here".
+
+2. **A small VPS** (e.g. Hetzner CX11, ~$4/mo, 2 GB RAM) — same command,
+   but it runs 24/7 without your laptop being on. Add
+   `LITE_MODE=true MAX_ACTIVE_TORRENTS=3` for a 2-vCPU box.
+
+3. **Oracle Cloud Free Tier ARM** (4 OCPU / 24 GB RAM, free forever) —
+   same as a VPS but $0. (Check that your region's A1 shape has capacity.)
+
+Netlify remains useful for one job only: hosting the **static UI** with
+`VITE_API_BASE_URL` pointed at whichever box runs `npm start` (see
+topology A). If you don't want a second host at all, just open the tunnel
+URL directly — the UI is served from the same box.
+
 ## LITE_MODE — the small‑host profile
 
 `LITE_MODE=true` flips the whole budget in one flag (every value can be
@@ -110,7 +152,7 @@ If all you need is *browse → render the UI → download the file* (no
 in‑browser playback machinery, no quality ladder):
 
 ```bash
-LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
+LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start
 ```
 
 That configuration is as close to "static site + file fetcher" as this
@@ -126,7 +168,7 @@ expect it to work for documents/ISOs/small videos, not 1080p movie night.
 | **Dead/fake swarms** | A "1080p" magnet with 0 real seeders spins warmup, DHT, and tracker retries forever — this is the field‑log heater | Now handled: warmup reports `stalled` after ~45 s without progress, the player *says so* and polls at ¼ rate; pick another source |
 | Rolling disk store | Streams pieces to disk, evicts the trailing edge every few seconds | Lower `WINDOW_AHEAD_MIN` / `WARM_DEFAULT_MB` |
 | ffmpeg transcoding | ~100 % of one core per 720p session | `DISABLE_TRANSCODE=true`, or only enable on demand |
-| Many parallel torrents | Each active torrent holds buffers + connections | `MAX_ACTIVE_TORRENTS=2` (429 for extras) |
+| Many parallel torrents | Each active torrent holds buffers + connections | `MAX_ACTIVE_TORRENTS=5` (429 for extras) |
 
 Quick cool‑laptop recipe:
 

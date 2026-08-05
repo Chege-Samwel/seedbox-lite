@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   SeedBox Lite — streaming UI design system
+   Heiken — streaming UI design system
    Dark, cinematic, mobile-first (future Android WebView wrapper).
    ═══════════════════════════════════════════════════════════════════ */
 
@@ -324,6 +324,13 @@ button { font-family: inherit; }
 }
 .warm-line.conn-note { border-radius: 10px; margin-top: 4px; }
 .buffer-hint { margin: 8px; padding-top: 8px; border-top: 1px solid #2a3242; font-size: 11px; color: var(--text-faint); line-height: 1.4; }
+.sound-hint {
+  position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%); z-index: 6;
+  display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-radius: 999px;
+  background: rgba(15, 18, 26, 0.92); border: 1px solid #3d4a63; color: var(--text);
+  font-size: 13px; cursor: pointer; box-shadow: var(--shadow); animation: fadein 0.25s ease;
+}
+.sound-hint:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ─── Player: custom controls ─── */
 .player-shell.ui-hidden { cursor: none; }
@@ -339,6 +346,49 @@ button { font-family: inherit; }
 .q-unavail code { background: #1a2130; padding: 1px 5px; border-radius: 5px; }
 .sub-item:disabled { opacity: 0.45; cursor: not-allowed; }
 .icon-btn { position: relative; }
+
+/* RSS catalog / torrent details */
+.feed-card-badge {
+  display: inline-flex; align-items: center; padding: 4px 7px; border-radius: 6px;
+  background: rgba(5, 8, 12, 0.82); color: #d9ffe9; font-size: 9px; font-weight: 900;
+  letter-spacing: 0.7px; backdrop-filter: blur(6px);
+}
+.feed-details-hero { min-height: 42vh; }
+.feed-details-main h1 { max-width: 980px; }
+.feed-source-card {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; max-width: 860px;
+  margin-top: 24px; padding: 13px 15px; border: 1px solid #262d3d; background: var(--bg-soft);
+  border-radius: var(--radius); color: var(--text-dim); font-size: 12.5px;
+}
+.feed-source-card strong, .feed-source-card span { display: block; }
+.feed-source-card strong { color: var(--text); font-size: 13px; margin-bottom: 3px; }
+.feed-policy { color: var(--text-faint); font-size: 11px; margin-top: 5px; }
+.feed-loading, .feed-file-placeholder {
+  display: flex; align-items: center; gap: 9px; max-width: 860px; margin-top: 24px; padding: 16px;
+  border: 1px dashed #313a4e; border-radius: var(--radius); color: var(--text-dim); font-size: 13px;
+}
+.feed-file-placeholder { justify-content: space-between; flex-wrap: wrap; }
+.feed-file-placeholder p { margin: 0; max-width: 680px; line-height: 1.5; }
+.spin-icon { animation: spin 1s linear infinite; color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.feed-files { margin-top: 30px; max-width: 980px; }
+.feed-episode-list { display: flex; flex-direction: column; gap: 8px; }
+.feed-file-row {
+  display: flex; align-items: center; gap: 13px; padding: 11px 12px; border: 1px solid #1f2635;
+  background: var(--bg-soft); border-radius: 10px; transition: background 0.18s, border-color 0.18s;
+}
+.feed-file-row:hover { background: var(--bg-card); border-color: #35415a; }
+.feed-file-index { min-width: 58px; color: var(--accent); font-size: 12px; font-weight: 800; }
+.feed-file-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.feed-file-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.feed-file-copy span { color: var(--text-faint); font-size: 11px; }
+.feed-subtitle-note { margin-top: 14px; color: var(--accent); }
+@media (max-width: 600px) {
+  .feed-file-row { gap: 8px; }
+  .feed-file-index { min-width: 45px; font-size: 10px; }
+  .feed-file-copy strong { font-size: 12px; }
+  .feed-file-row .btn { padding: 8px 10px; font-size: 12px; }
+}
 
 /* Offline catalog banner (home) */
 .offline-banner {
@@ -497,6 +547,22 @@ video::cue {
 .art-pick { border: 2px solid transparent; border-radius: 10px; overflow: hidden; cursor: pointer; aspect-ratio: 2/3; background: var(--bg-card); padding: 0; }
 .art-pick img { width: 100%; height: 100%; object-fit: cover; }
 .art-pick:hover { border-color: var(--accent); }
+
+/* ─── Install-app hint (PWA: phones & Android TV) ─── */
+.install-hint {
+  position: fixed; z-index: 120; left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom) + 12px);
+  width: min(680px, calc(100vw - 24px));
+  background: rgba(17, 20, 28, 0.97); border: 1px solid #2a3242; border-radius: 16px;
+  padding: 12px 14px; box-shadow: var(--shadow);
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  animation: slideup 0.35s cubic-bezier(0.2, 0.8, 0.3, 1);
+  color: var(--text);
+}
+@media (min-width: 900px) { .install-hint { bottom: 20px; } }
+.install-hint-text { flex: 1 1 300px; font-size: 13px; line-height: 1.45; color: var(--text-dim); }
+.install-hint-close { flex-shrink: 0; width: 28px; height: 28px; }
+.install-hint-close:hover { color: var(--text); }
 
 /* ─── Consent banner & legal ─── */
 .consent-banner {

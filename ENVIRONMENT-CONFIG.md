@@ -131,15 +131,18 @@ FRONTEND_URL=https://mydomain.com
 ## 🛠️ Implementation Details
 
 ### Frontend API Configuration
-The frontend now uses a centralized configuration:
+The frontend talks to the API through the centralized client in
+`client/src/services/api.js`. It uses the same-origin base by default, and
+self-heals to the page's own origin when a baked `VITE_API_BASE_URL` is
+unreachable:
 ```javascript
-import { config } from '../config/environment';
+import { apiBase } from './services/api'; // 'https://api.example.com' or '' (same-origin)
 
 // Old way (hardcoded)
 fetch('http://localhost:3000/api/torrents')
 
-// New way (configurable)
-fetch(config.api.torrents)
+// New way (configurable + same-origin aware)
+fetch(`${apiBase()}/api/torrents`)
 ```
 
 ### Available Frontend Helpers

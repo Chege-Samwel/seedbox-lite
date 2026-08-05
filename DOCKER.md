@@ -1,6 +1,6 @@
-# SeedBox Lite - Docker Deployment Guide
+# Heiken - Docker Deployment Guide
 
-This guide covers deploying SeedBox Lite using Docker Compose for different environments.
+This guide covers deploying Heiken using Docker Compose for different environments.
 
 ## 🚀 Quick Start
 

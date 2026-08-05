@@ -1,9 +1,30 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, Info, RotateCw } from 'lucide-react';
+import { Play, Info, RotateCw, Radio } from 'lucide-react';
 import { getHome, getHistory, getLibrary } from '../services/api';
 import { useFavorites } from '../hooks/useFavorites';
 import { Row, MediaCard, ReadyBadge, Spinner, EmptyState } from '../components/ui';
+
+function cleanDescription(value) {
+  return String(value || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function feedDate(item) {
+  if (!item?.publishedAt) return '';
+  const date = new Date(item.publishedAt);
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function feedSubtitle(item) {
+  const ep = item?.episodeInfo;
+  if (item?.category === 'tv' && ep?.isEpisode) return `S${String(ep.season).padStart(2, '0')} · E${String(ep.episode).padStart(2, '0')} · ${feedDate(item)}`;
+  if (item?.category === 'tv' && ep?.isPack) return `Season pack · ${feedDate(item)}`;
+  return [item?.category === 'tv' ? 'TV show' : 'Movie', feedDate(item)].filter(Boolean).join(' · ');
+}
+
+function FeedBadge({ item }) {
+  return <span className="feed-card-badge">{item.category === 'tv' ? 'TV' : 'MOVIE'}</span>;
+}
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -17,16 +38,21 @@ export default function HomePage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    (async () => {
-      const [homeRes, histRes, libRes] = await Promise.allSettled([
-        getHome(), getHistory(), getLibrary(),
-      ]);
-      if (cancelled) return;
-      setHome(homeRes.status === 'fulfilled' ? homeRes.value : { rows: [], offline: true });
-      setHistory(histRes.status === 'fulfilled' ? histRes.value.history : []);
-      setLibrary(libRes.status === 'fulfilled' ? libRes.value.items : []);
-      setLoading(false);
-    })();
+    let localDone = false;
+    const markLocalDone = () => {
+      if (!localDone) { localDone = true; if (!cancelled) setLoading(false); }
+    };
+    getHistory()
+      .then((h) => { if (!cancelled) setHistory(h.history || []); })
+      .catch(() => { if (!cancelled) setHistory([]); })
+      .finally(markLocalDone);
+    getLibrary()
+      .then((l) => { if (!cancelled) setLibrary(l.items || []); })
+      .catch(() => { if (!cancelled) setLibrary([]); })
+      .finally(markLocalDone);
+    getHome(reloadTick > 0)
+      .then((h) => { if (!cancelled) setHome(h || { rows: [], offline: true }); })
+      .catch(() => { if (!cancelled) setHome({ rows: [], offline: true }); });
     return () => { cancelled = true; };
   }, [reloadTick]);
 
@@ -37,13 +63,15 @@ export default function HomePage() {
     [history]
   );
 
+  const feedRows = useMemo(() => home?.rows || [], [home]);
   const featured = useMemo(() => {
-    const first = home?.rows?.find((r) => r.items?.length)?.items || [];
-    // A deterministic "featured" pick, reshuffled daily
-    if (!first.length) return null;
-    const day = Math.floor(Date.now() / 86400000);
-    return first[day % first.length];
-  }, [home]);
+    const latest = feedRows.find((row) => row.kind === 'new' && row.items?.length);
+    return latest?.items?.[0] || feedRows.find((row) => row.items?.length)?.items?.[0] || null;
+  }, [feedRows]);
+
+  const openFeed = useCallback((item) => {
+    if (item?.infoHash) navigate(`/title/feed/${encodeURIComponent(item.infoHash)}`);
+  }, [navigate]);
 
   if (loading) {
     return <div className="page" style={{ paddingTop: 90 }}><Spinner label="Loading your cinema…" /></div>;
@@ -53,22 +81,23 @@ export default function HomePage() {
     <div className="sb-app">
       {featured && (
         <div className="hero">
-          <div className="hero-bg" style={{ backgroundImage: `url(${featured.poster})` }} />
+          <div className="hero-bg" style={{ backgroundImage: `url(${featured.backdrop || featured.poster})` }} />
           <div className="hero-content">
-            <span className="hero-tag">● Public Domain Pick</span>
+            <span className="hero-tag"><Radio size={13} /> {featured.category === 'tv' ? 'Latest TV show' : 'Latest movie'} · RSS catalog</span>
             <h1 className="hero-title">{featured.title}</h1>
             <div className="hero-meta">
-              {featured.year && <span className="match">{featured.year}</span>}
-              {featured.downloads > 0 && <span>{Intl.NumberFormat('en', { notation: 'compact' }).format(featured.downloads)} downloads</span>}
-              <span>Internet Archive</span>
+              {featured.episodeInfo?.isEpisode && <span className="match">S{String(featured.episodeInfo.season).padStart(2, '0')}E{String(featured.episodeInfo.episode).padStart(2, '0')}</span>}
+              {featured.creator && <span>by {featured.creator}</span>}
+              {featured.size > 0 && <span>{(featured.size / 1073741824).toFixed(1)} GB</span>}
+              <span>The Pirate Bay RSS</span>
             </div>
-            {featured.description && <p className="hero-desc">{featured.description.replace(/<[^>]*>/g, '').slice(0, 280)}</p>}
+            {featured.overview && <p className="hero-desc">{cleanDescription(featured.overview).slice(0, 280)}</p>}
             <div className="hero-actions">
-              <button className="btn btn-primary" onClick={() => navigate(`/title/archive/${featured.id}?autoplay=1`)}>
-                <Play size={18} fill="currentColor" /> Play
+              <button className="btn btn-primary" onClick={() => openFeed(featured)}>
+                <Play size={18} fill="currentColor" /> Open title
               </button>
-              <button className="btn btn-ghost" onClick={() => navigate(`/title/archive/${featured.id}`)}>
-                <Info size={18} /> Details
+              <button className="btn btn-ghost" onClick={() => openFeed(featured)}>
+                <Info size={18} /> Episodes &amp; files
               </button>
             </div>
           </div>
@@ -101,7 +130,8 @@ export default function HomePage() {
               subtitle={f.kind}
               poster={f.poster}
               onClick={() => {
-                if (f.ref?.type === 'archive') navigate(`/title/archive/${f.ref.id}`);
+                if (f.ref?.type === 'rss') navigate(`/title/feed/${encodeURIComponent(f.ref.id)}`);
+                else if (f.ref?.type === 'archive') navigate(`/title/archive/${f.ref.id}`);
                 else if (f.ref?.type === 'show') navigate(`/title/show/${encodeURIComponent(f.ref.id)}`);
                 else navigate('/library');
               }}
@@ -123,36 +153,34 @@ export default function HomePage() {
           ))}
         </Row>
 
-        {home?.offline && (continueWatching.length > 0 || library.length > 0 || favorites.length > 0) && (
+        {home?.offline && (
           <div className="offline-banner">
-            <span>📡 Archive catalog unreachable — your library &amp; history still work.</span>
-            <button className="btn btn-dark btn-sm" onClick={retry}><RotateCw size={13} /> Retry</button>
+            <span>📡 Live RSS is unavailable — showing the fixed catalog snapshot. Your title pages and pipeline still work.</span>
+            <button className="btn btn-dark btn-sm" onClick={retry}><RotateCw size={13} /> Retry feeds</button>
           </div>
         )}
 
-        {(home?.rows || []).map((row) => (
-          <Row key={row.key} title={row.title} hint="Internet Archive">
-            {row.items.map((it) => (
+        {feedRows.map((row) => (
+          <Row key={row.key} title={row.title} hint={row.hint}>
+            {row.items.map((item) => (
               <MediaCard
-                key={it.id}
-                title={it.title}
-                subtitle={it.year || ''}
-                poster={it.poster}
-                onClick={() => navigate(`/title/archive/${it.id}`)}
+                key={`${row.key}:${item.infoHash}`}
+                title={item.title}
+                subtitle={feedSubtitle(item)}
+                poster={item.poster}
+                badge={<FeedBadge item={item} />}
+                onClick={() => openFeed(item)}
               />
             ))}
           </Row>
         ))}
 
-        {home?.offline && home.rows.length === 0 && !continueWatching.length && !library.length && (
+        {feedRows.length === 0 && !continueWatching.length && !library.length && (
           <div style={{ paddingTop: 60 }}>
-            <EmptyState emoji="📡" title="Catalog unreachable">
-              The Internet Archive couldn't be reached from the server right now.
-              You can still add magnets in the <strong>Pipeline</strong> tab.
+            <EmptyState emoji="📡" title="No catalog rows available">
+              The RSS feeds could not be reached and no fixed snapshot is available.
               <div style={{ marginTop: 16 }}>
-                <button className="btn btn-primary" onClick={retry}>
-                  <RotateCw size={16} /> Retry catalog
-                </button>
+                <button className="btn btn-primary" onClick={retry}><RotateCw size={16} /> Retry catalog</button>
               </div>
             </EmptyState>
           </div>

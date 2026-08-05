@@ -1,5 +1,33 @@
 # 🚀 Quick Start Guide
 
+## Run from a ZIP / fresh download (no git, no Docker)
+
+1. **Extract the download** and open a terminal in that folder:
+   ```bash
+   cd ~/Downloads/seedbox-lite-arena-019fd2ac-seedbox-lite
+   ```
+
+2. **Start it** — dependencies install automatically on first run
+   (root, server, client — one time only):
+   ```bash
+   npm start
+   ```
+   For development with live reload instead:
+   ```bash
+   npm run dev      # API on :3000, web UI on :5173
+   ```
+
+3. **On a laptop or small host, run it cool:**
+   ```bash
+   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
+   ```
+
+4. **Access**: http://localhost:3000 (production) or http://localhost:5173 (dev)
+   — the **owner login ticket is printed in the server log on first boot**.
+
+> If you prefer to install manually: `npm run install-all`
+> (equivalent to `npm install` in root, `server/` and `client/`).
+
 ## Docker Deployment (Recommended)
 
 ### Prerequisites

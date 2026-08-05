@@ -1,0 +1,22 @@
+# Netlify build for the Seedbox Lite FRONTEND (static control plane).
+#
+# This builds ONLY the React client (client/dist) as a static site. The
+# torrent engine / API ("data plane") cannot run on Netlify's ephemeral
+# builders — it lives on your own machine / VPS (see DEPLOYMENT.md, "Split
+# deployment"). The client talks to that server through VITE_API_BASE_URL,
+# which must be set to the server's real public https URL before building
+# (client/.env.production or a Netlify env var of the same name).
+#
+# IMPORTANT: leave the publish directory as client/dist. The old UI setting
+# pointed the build at /server and ran `vite build` there — the server has
+# no vite and never hosts the UI; that's what failed with
+# "vite: command not found".
+
+[build]
+  base = "client"
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Fail loudly instead of baking a template/empty value into the bundle.
+  NODE_VERSION = "22"

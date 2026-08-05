@@ -1,33 +1,39 @@
-# 🎬 SeedBox Lite
+# 🎬 Heiken
 
 Stream Torrents Instantly
 
 <div align="center">
 
-![SeedBox Lite](https://img.shields.io/badge/SeedBox-Lite-green?style=for-the-badge&logo=leaf)
+![Heiken](https://img.shields.io/badge/Heiken-Lite-green?style=for-the-badge&logo=leaf)
 ![Docker](https://img.shields.io/badge/Docker-Enabled-blue?style=for-the-badge&logo=docker)
 ![React](https://img.shields.io/badge/React-19.1.1-61dafb?style=for-the-badge&logo=react)
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green?style=for-the-badge&logo=node.js)
 
 **A modern, lightweight torrent streaming application with instant playback**
 
-<img src="https://raw.githubusercontent.com/hotheadhacker/seedbox-lite/refs/heads/main/screenshots/details-screen.png" alt="SeedBox Lite Screenshot" width="80%"/>
+<img src="https://raw.githubusercontent.com/Chege-Samwel/seedbox-lite/refs/heads/main/screenshots/details-screen.png" alt="Heiken Screenshot" width="80%"/>
 
-[View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
+[View all screenshots](https://github.com/Chege-Samwel/seedbox-lite/tree/main/screenshots)
 
 [Features](#-features) • [Screenshots](#-screenshots) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Documentation](#-documentation)
+
+> 📖 **New to Heiken?** Follow the **[Step-by-Step Setup Guide](SETUP-GUIDE.md)**
+> · 📱 **Android APK** (phones & TV, no Play Store): **[ANDROID-APK.md](ANDROID-APK.md)**
+> — Netlify static UI + engine on your laptop + Cloudflare tunnel, phones and
+> Android TV included.
 
 </div>
 
 ## 🚀 Overview
 
-SeedBox Lite is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
+Heiken is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
 
 ## 🎟️ Streaming Suite (v2)
 
 A complete, invite-only personal cinema layered on top of the streaming engine:
 
 - **Ticket login system** — users sign in with ticket codes (`SB-XXXX-XXXX`) issued from the **admin panel** (`/admin`). Tickets can be **discontinued or renewed** at any time; sessions are validated on app boot and every request, so a revoked ticket kills access immediately. An owner ticket is generated on first boot and printed to the server console.
+- **RSS home catalog** — Home reads the four configured movie/TV RSS views (latest and top 100), sorts newest entries first, keeps a fixed offline snapshot, resolves artwork from the title, and gives season packs an episode/file list when the torrent exposes multiple videos.
 - **Internet Archive catalog (legal)** — browse curated rows (classics, sci-fi, horror, silent era, cartoons, documentaries), search the full public-domain catalog, and stream directly with progressive HTTP playback — no torrent needed for archive content.
 - **Magnet pipeline (in-memory)** — users queue magnets for content **they have the rights to**; the server holds them in WebTorrent memory. **Nothing downloads when a magnet is added** — warm-up fires on the Play click (or any seek): the server buffers ~**1 minute of media from that exact position** and the player starts the moment the ready-gate is filled, with a live ETA/peer readout. Titles are **auto-derived from the real file names** (season packs collapse to the shared show name). Idle items show **Sleeping 💤** — one tap on ▶ wakes them, even after a server restart or an accidental exit, because loads/warmups are fully deduped. Tunable via `WARM_DEFAULT_MB`, `WARM_READY_MIN_MB`, `WARM_WINDOW_KEEP_MIN`.
 - **Picture library** — every pipeline item automatically gets posters/backdrops/overviews from keywords (title, year, SxxExx parsed from filenames) via TMDB (optional key) → TVMaze → iTunes → OMDb fallback chain. Manual re-lookup + alternate-poster picker included.
@@ -58,7 +64,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 | History | `GET/POST /api/me/history` · `GET/DELETE /api/me/history/:key` · `DELETE /api/me/history` |
 | Tracking | `GET /api/me/shows` · `GET /api/me/shows/:key` · `POST /api/me/shows/watched` |
 
-> **Content policy:** this app does **not** include or support pirate index integrations. It ships with the fully legal Internet Archive catalog and a pipeline for magnets the user is licensed to access. All artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
+> **Content policy:** the operator ships no media files and accepts no responsibility for how users use third-party RSS metadata or magnets. Only queue or play material you are authorized to access. Artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
 
 
 
@@ -105,7 +111,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 ## 📸 Screenshots
 
-[View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
+[View all screenshots](https://github.com/Chege-Samwel/seedbox-lite/tree/main/screenshots)
 
 ## 🍃 Small hosts & free tiers (Render/Railway, laptops)
 
@@ -128,11 +134,15 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 ## 🚀 Quick Start
 
+> **Fresh download or clone?** You don't need a manual `npm install` anymore —
+> `npm start` and `npm run dev` check for missing dependencies and install
+> them automatically on first run (root, server, client). Just run the command.
+
 ### Production (one command, one port — recommended for a home server)
 
 ```bash
-npm run install-all
-npm start        # builds the client AND serves UI+API together on :3000
+npm start        # installs deps on first run, builds the client,
+                 # serves UI+API together on :3000
 ```
 
 - Open **http://localhost:3000** — the UI, API, and streams share one origin (no CORS, no `VITE_API_BASE_URL` needed).
@@ -141,11 +151,31 @@ npm start        # builds the client AND serves UI+API together on :3000
   **`npm run new-ticket`** (create one) · or log in and use **/admin** with your
   `ADMIN_PASSWORD`. See [DEPLOYMENT.md](DEPLOYMENT.md) for tunnels & free tiers.
 
+### Development (live reload — API on :3000, UI on :5173)
+
+```bash
+npm run dev      # installs deps on first run, then runs server + Vite dev server
+```
+
+- Open **http://localhost:5173** — Vite proxies `/api` to the server for you.
+
+### Small / laptop hosts (stay cool)
+
+Add these on the same command line to cap memory, CPU and torrent count:
+
+```bash
+LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
+```
+
+- `LITE_MODE=true` → smaller buffer windows, fewer connections, RSS cap ~420MB
+- `DISABLE_TRANSCODE=true` → no ffmpeg (the biggest CPU/heat source)
+- `MAX_ACTIVE_TORRENTS=2` → never load more than 2 torrents at once
+
 ### Using Docker
 
 ```bash
 # Clone the repository
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Start with Docker Compose
@@ -159,7 +189,7 @@ open http://localhost:5174
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -203,7 +233,7 @@ pm2 start ecosystem.config.js
 
 #### Step 1: Clone Repository
 ```bash
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 ```
 
@@ -262,7 +292,7 @@ npm install -g pm2
 #### Step 2: Application Setup
 ```bash
 # Clone repository
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -305,7 +335,7 @@ cd ../client/dist
 npx serve -s . -l 5174
 
 # Or use PM2 for frontend
-pm2 start "npx serve -s . -l 5174" --name "seedbox-frontend"
+pm2 start "npx serve -s . -l 5174" --name "heiken-frontend"
 ```
 
 #### Step 5: PM2 Management
@@ -328,7 +358,7 @@ pm2 startup
 
 #### Step 1: Clone and Install
 ```bash
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -352,7 +382,7 @@ cp .env.example .env
 NODE_ENV=development
 SERVER_PORT=3000
 SERVER_HOST=localhost
-ACCESS_PASSWORD=seedbox123
+ACCESS_PASSWORD=change-me
 FRONTEND_URL=http://localhost:5173
 ```
 
@@ -388,8 +418,8 @@ curl http://localhost:3001/api/cache/stats
 ```bash
 # Check PM2 status
 pm2 list
-pm2 logs seedbox-backend
-pm2 logs seedbox-frontend
+pm2 logs heiken-backend
+pm2 logs heiken-frontend
 
 # Test API endpoints
 curl http://localhost:3001/api/health
@@ -506,8 +536,8 @@ docker-compose up --build
 docker system prune -a
 
 # Check container logs
-docker-compose logs seedbox-backend
-docker-compose logs seedbox-frontend
+docker-compose logs heiken-backend
+docker-compose logs heiken-frontend
 ```
 
 #### PM2 Issues
@@ -613,8 +643,8 @@ For high-traffic deployments:
 
 ### Getting Help
 - 📖 [Documentation](./docs/)
-- 🐛 [Issue Tracker](https://github.com/hotheadhacker/seedbox-lite/issues)
-- 💬 [Discussions](https://github.com/hotheadhacker/seedbox-lite/discussions)
+- 🐛 [Issue Tracker](https://github.com/Chege-Samwel/seedbox-lite/issues)
+- 💬 [Discussions](https://github.com/Chege-Samwel/seedbox-lite/discussions)
 
 ### Contributing
 1. Fork the repository
@@ -625,17 +655,17 @@ For high-traffic deployments:
 
 ## ⚠️ Legal Disclaimer
 
-**IMPORTANT: Please read this disclaimer carefully before using SeedBox Lite.**
+**IMPORTANT: Please read this disclaimer carefully before using Heiken.**
 
-SeedBox Lite is an open-source project provided for educational and personal use only. We do not endorse, promote, or facilitate copyright infringement, illegal streaming, or piracy in any form. This software is designed to be used with legal content only.
+Heiken is an open-source project provided for educational and personal use only. We do not endorse, promote, or facilitate copyright infringement, illegal streaming, or piracy in any form. This software is designed to be used with legal content only.
 
 - We do not host, store, or distribute any content. All torrents and media are accessed through your own connections.
 - This application is intended for use with content that you have the legal right to access and stream.
 - Users are solely responsible for how they use this software and for ensuring compliance with all applicable laws in their jurisdiction.
-- The creators and contributors of SeedBox Lite take no responsibility for how this software is used.
+- The creators and contributors of Heiken take no responsibility for how this software is used.
 - Using torrents to download or share copyrighted materials without permission may be illegal in your country.
 
-By using SeedBox Lite, you acknowledge that you understand these terms and agree to use the software responsibly and legally.
+By using Heiken, you acknowledge that you understand these terms and agree to use the software responsibly and legally.
 
 ## 📄 License
 

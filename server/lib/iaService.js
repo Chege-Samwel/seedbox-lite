@@ -8,6 +8,35 @@ const db = require('./jsondb');
 const IA = 'https://archive.org';
 const CACHE_KEY = 'ia_cache';
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const REQUEST_TIMEOUT_MS = 6000;          // per upstream call (was 9s)
+const PROBE_TIMEOUT_MS = 4000;            // connectivity probe
+const DOWN_WINDOW_MS = 60 * 1000;         // remember "IA unreachable" for 1 min
+
+// Fast-fail circuit breaker: when archive.org is unreachable (blocked ISP,
+// regional routing issue, outage), every catalog request used to fan out 7
+// parallel requests that each hung until their timeout. Now one cheap probe
+// gates the fan-out, and the negative result is remembered briefly so
+// returning Home doesn't re-probe on every navigation.
+let iaDownUntil = 0;
+
+async function probeIA() {
+  if (Date.now() < iaDownUntil) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${IA}/robots.txt`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'SeedBoxLite/2.0 (+legal-media-streaming)' },
+    });
+    clearTimeout(timer);
+    if (!res.ok) { iaDownUntil = Date.now() + DOWN_WINDOW_MS; return false; }
+    return true;
+  } catch {
+    clearTimeout(timer);
+    iaDownUntil = Date.now() + DOWN_WINDOW_MS;
+    return false;
+  }
+}
 
 function cache() { return db.read(CACHE_KEY, { entries: {} }); }
 
@@ -28,7 +57,7 @@ function cachedSet(key, data) {
   db.write(CACHE_KEY, c);
 }
 
-async function fetchJson(url, timeoutMs = 9000) {
+async function fetchJson(url, timeoutMs = REQUEST_TIMEOUT_MS) {
   const hit = cachedGet(url);
   if (hit) return hit;
   const controller = new AbortController();
@@ -71,6 +100,7 @@ function docToCard(doc) {
  * Search Internet Archive advancedsearch API.
  */
 async function search(query, { page = 1, rows = 24, sort = 'downloads desc', mediaType = 'movies' } = {}) {
+  if (!(await probeIA())) throw new Error('Internet Archive unreachable');
   const q = mediaType === 'all' ? query : `${query} AND mediatype:${mediaType}`;
   const params = new URLSearchParams({ q, output: 'json' });
   ['identifier', 'title', 'year', 'date', 'downloads', 'description', 'mediatype'].forEach((f) => params.append('fl[]', f));
@@ -101,6 +131,7 @@ const HOME_ROWS = [
 ];
 
 async function home() {
+  if (!(await probeIA())) return { rows: [], offline: true };
   const rows = [];
   let anyOk = false;
   const settled = await Promise.allSettled(
@@ -131,6 +162,7 @@ function extOf(name) {
  * Full details for one IA item: metadata, playable files, subtitles.
  */
 async function item(identifier) {
+  if (!(await probeIA())) throw new Error('Internet Archive unreachable');
   const data = await fetchJson(`${IA}/metadata/${encodeURIComponent(identifier)}`);
   const meta = data?.metadata || {};
   const files = (data?.files || []).filter((f) => f && f.name && f.private !== 'true');

@@ -14,6 +14,8 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     server: {
+      // Accept any Host header in dev (tunnels, sandbox previews, LAN IPs).
+      allowedHosts: true,
       proxy: {
         "/api": {
           target: apiBaseUrl,

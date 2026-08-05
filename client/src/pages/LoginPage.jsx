@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { Leaf } from 'lucide-react';
+import { Leaf, Server, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiBase } from '../services/api';
+import { apiBase, setApiBaseOverride } from '../services/api';
 
 export default function LoginPage() {
   const { login, authError, setAuthError } = useAuth();
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState(null); // { host, ok }
+  const [serverAddr, setServerAddr] = useState(() => localStorage.getItem('sb_api_base_override') || '');
+  const [savedAddr, setSavedAddr] = useState(() => localStorage.getItem('sb_api_base_override') || '');
 
   // Live reachability chip: pings the API the login will actually use and
   // shows WHERE it points — a baked-in placeholder/wrong base (the classic
@@ -40,12 +42,18 @@ export default function LoginPage() {
     setBusy(false);
   };
 
+  const applyServerAddr = () => {
+    setApiBaseOverride(serverAddr);
+    setSavedAddr(serverAddr);
+    setProbe(null); // the sb_api_base_changed listener re-probes immediately
+  };
+
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={submit}>
         <span className="brand" style={{ fontSize: 22 }}>
           <span className="leaf"><Leaf size={24} /></span>
-          SeedBox<small>Lite</small>
+          Heiken
         </span>
         <h1>Enter your ticket</h1>
         <p>Access is by invitation only. Enter the login ticket code you received from the administrator.</p>
@@ -74,6 +82,45 @@ export default function LoginPage() {
         <p style={{ marginTop: 18, marginBottom: 0, fontSize: 12, textAlign: 'center' }}>
           Tickets can be discontinued or renewed by the administrator at any time.
         </p>
+        <details style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim, #9aa)' }}>
+          <summary style={{ cursor: 'pointer' }}><Server size={12} style={{ verticalAlign: -2 }} /> Server address (split hosting)</summary>
+          <div style={{ margin: '8px 0 0', display: 'flex', gap: 6, flexDirection: 'column' }}>
+            <p style={{ margin: 0, lineHeight: 1.5 }}>
+              The static UI (Netlify) needs to know where your Heiken engine runs. If
+              you use a Cloudflare <em>quick</em> tunnel, its URL changes every run —
+              paste the current one here once per device (no rebuild needed):
+            </p>
+            <input
+              className="input"
+              placeholder="https://your-tunnel-url.trycloudflare.com"
+              value={serverAddr}
+              onChange={(e) => setServerAddr(e.target.value)}
+              inputMode="url"
+              autoComplete="off"
+              spellCheck="false"
+            />
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button type="button" className="btn btn-primary btn-sm" style={{ flex: 1 }} onClick={applyServerAddr} disabled={serverAddr.trim() === savedAddr}>
+                {savedAddr ? 'Update server' : 'Use this server'}
+              </button>
+              {savedAddr && (
+                <button
+                  type="button"
+                  className="btn btn-dark btn-sm"
+                  title="Clear and use the baked VITE_API_BASE_URL"
+                  onClick={() => { setApiBaseOverride(''); setServerAddr(''); setSavedAddr(''); setProbe(null); }}
+                >
+                  <X size={13} /> Clear
+                </button>
+              )}
+            </div>
+            {savedAddr && (
+              <p style={{ margin: '4px 0 0', fontSize: 11, color: 'var(--text-faint, #889)' }}>
+                Saved for this device: {savedAddr}
+              </p>
+            )}
+          </div>
+        </details>
         <details style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim, #9aa)' }}>
           <summary style={{ cursor: 'pointer' }}>Server owner? Common mix-ups</summary>
           <ul style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
