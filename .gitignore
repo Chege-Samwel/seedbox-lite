@@ -69,3 +69,6 @@ downloads
 # Feature data (tickets, sessions, user stores, caches)
 server/data/
 
+
+# Android APK build output + tooling
+/dist-apk/

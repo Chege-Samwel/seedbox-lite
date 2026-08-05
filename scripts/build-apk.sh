@@ -7,8 +7,8 @@
 #   ./scripts/build-apk.sh https://heikenapp.netlify.app
 #
 # Uses Google's Bubblewrap (@bubblewrap/cli) to wrap the Heiken PWA in a
-# fullscreen Android app. First run downloads the Android SDK + Gradle
-# deps automatically (a few minutes, ~1–2 GB disk). Java (JDK 8+) is the
+# fullscreen Android app. First run downloads Bubblewrap, the Android SDK
+# and Gradle deps (several minutes, ~1–2 GB disk). Java (JDK 8+) is the
 # only manual prerequisite.
 #
 # IMPORTANT — what URL goes in the APK:
@@ -81,22 +81,37 @@ cat > dist-apk/twa/twa-manifest.json <<JSON
 }
 JSON
 
-echo
-echo "⏳ Ensuring Bubblewrap (@bubblewrap/cli)…"
-npx --yes @bubblewrap/cli --version >/dev/null 2>&1 || { echo "✖ Could not fetch @bubblewrap/cli — check npm/network."; exit 1; }
+# ── Bubblewrap lives in a local tool dir (visible install, cached) ──
+TOOLDIR="dist-apk/tool"
+BW="$TOOLDIR/node_modules/.bin/bubblewrap"
+mkdir -p "$TOOLDIR"
+if [ ! -x "$BW" ]; then
+  echo
+  echo "⏳ Downloading Bubblewrap (@bubblewrap/cli)…"
+  echo "    First run downloads it + its deps. This can take a few minutes on a"
+  echo "    slow connection — watch for the npm progress bar (it is NOT stuck)."
+  ( cd "$TOOLDIR" && npm install --no-audit --no-fund @bubblewrap/cli ) || {
+    echo "✖ Could not install @bubblewrap/cli — check npm/network."
+    exit 1
+  }
+fi
+echo "✓ Bubblewrap ready: $($BW --version 2>/dev/null || echo 'version?')"
 
+echo
 echo "⏳ Checking Android SDK (bubblewrap doctor)…"
-if ! npx --yes @bubblewrap/cli doctor >/dev/null 2>&1; then
-  echo "   Android SDK not ready — installing it now (one-time, ~1–2 GB)…"
-  echo "   (Answer its prompts; this can take several minutes.)"
-  npx --yes @bubblewrap/cli sdk install || {
-    echo "✖ SDK install failed. Try manually:  npx @bubblewrap/cli sdk install"
+if ! "$BW" doctor >/dev/null 2>&1; then
+  echo "   Android SDK not ready — installing it now (one-time, ~1–2 GB)."
+  echo "   No output for a few minutes is normal while it downloads."
+  echo
+  yes | "$BW" sdk install || {
+    echo "✖ SDK install failed. Try manually:  $BW sdk install"
     exit 1
   }
 fi
 
-echo "⏳ Building APK (first run downloads Gradle deps — can take several minutes)…"
-( cd dist-apk/twa && npx --yes @bubblewrap/cli build )
+echo
+echo "⏳ Building APK — first Gradle run downloads dependencies, several minutes…"
+( cd dist-apk/twa && "$OLDPWD/$BW" build )
 
 APK="$(find dist-apk/twa/app/build/outputs -name '*.apk' 2>/dev/null | head -1)"
 if [ -z "$APK" ]; then
