@@ -92,12 +92,21 @@ three. So "both in one place" means one of these:
 
 1. **Your own machine at home + Cloudflare Tunnel (free, no port-forwarding).**
    ```bash
-   # on your machine — UI + API + engine, one port
-   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
-   # expose it publicly (free, includes TLS)
-   cloudflared tunnel --url http://localhost:3000
-   # → gives you https://<random>.trycloudflare.com — book the URL
-   #   (or set up a named tunnel + your own domain for a stable one)
+   # one command: starts the app (cool profile) AND opens a public URL
+   ./scripts/tunnel.sh
+   # → prints https://<random>.trycloudflare.com — open it or share it
+   ```
+   The script uses the cool profile for your laptop and stops everything on
+   Ctrl+C. The quick-tunnel URL changes every run; for a **stable URL** you
+   (or your family) can always find, set up a named tunnel once:
+   ```bash
+   cloudflared tunnel login                     # link your Cloudflare account
+   cloudflared tunnel create seedbox            # creates a tunnel
+   # add DNS for a subdomain of a domain you own, e.g. seedbox.example.com:
+   cloudflared tunnel route dns seedbox seedbox.example.com
+   # then instead of the quick tunnel, run:
+   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start &
+   cloudflared tunnel run seedbox --url http://localhost:3000
    ```
    Your ISP connection serves the streams (home fibre up is plenty for
    3–5 users). Cost: $0. This is the closest thing to "host both here".
