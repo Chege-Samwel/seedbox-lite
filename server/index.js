@@ -2459,7 +2459,7 @@ const HOST = config.server.host;
 
 app.listen(PORT, "0.0.0.0", () => {
   const serverUrl = `${config.server.protocol}://${HOST}:${PORT}`;
-  console.log(`🌱 Seedbox Lite server running on ${serverUrl}`);
+  console.log(`🌱 Heiken server running on ${serverUrl}`);
   console.log(`📱 Frontend URL: ${config.frontend.url}`);
   console.log(`🚀 UNIVERSAL TORRENT RESOLUTION SYSTEM ACTIVE`);
   

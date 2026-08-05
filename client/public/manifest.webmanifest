@@ -1,6 +1,6 @@
 {
-  "name": "SeedBox Lite",
-  "short_name": "SeedBox",
+  "name": "Heiken",
+  "short_name": "Heiken",
   "description": "Personal streaming cinema: Internet Archive catalog, magnet pipeline, subtitles and watch tracking.",
   "start_url": "/",
   "scope": "/",

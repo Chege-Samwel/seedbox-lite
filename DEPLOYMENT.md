@@ -105,7 +105,7 @@ three. So "both in one place" means one of these:
    # add DNS for a subdomain of a domain you own, e.g. seedbox.example.com:
    cloudflared tunnel route dns seedbox seedbox.example.com
    # then instead of the quick tunnel, run:
-   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start &
+   LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start &
    cloudflared tunnel run seedbox --url http://localhost:3000
    ```
    Your ISP connection serves the streams (home fibre up is plenty for
@@ -152,7 +152,7 @@ If all you need is *browse → render the UI → download the file* (no
 in‑browser playback machinery, no quality ladder):
 
 ```bash
-LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
+LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start
 ```
 
 That configuration is as close to "static site + file fetcher" as this
@@ -168,7 +168,7 @@ expect it to work for documents/ISOs/small videos, not 1080p movie night.
 | **Dead/fake swarms** | A "1080p" magnet with 0 real seeders spins warmup, DHT, and tracker retries forever — this is the field‑log heater | Now handled: warmup reports `stalled` after ~45 s without progress, the player *says so* and polls at ¼ rate; pick another source |
 | Rolling disk store | Streams pieces to disk, evicts the trailing edge every few seconds | Lower `WINDOW_AHEAD_MIN` / `WARM_DEFAULT_MB` |
 | ffmpeg transcoding | ~100 % of one core per 720p session | `DISABLE_TRANSCODE=true`, or only enable on demand |
-| Many parallel torrents | Each active torrent holds buffers + connections | `MAX_ACTIVE_TORRENTS=2` (429 for extras) |
+| Many parallel torrents | Each active torrent holds buffers + connections | `MAX_ACTIVE_TORRENTS=5` (429 for extras) |
 
 Quick cool‑laptop recipe:
 

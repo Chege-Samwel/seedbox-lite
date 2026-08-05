@@ -1,27 +1,31 @@
-# 🎬 SeedBox Lite
+# 🎬 Heiken
 
 Stream Torrents Instantly
 
 <div align="center">
 
-![SeedBox Lite](https://img.shields.io/badge/SeedBox-Lite-green?style=for-the-badge&logo=leaf)
+![Heiken](https://img.shields.io/badge/Heiken-Lite-green?style=for-the-badge&logo=leaf)
 ![Docker](https://img.shields.io/badge/Docker-Enabled-blue?style=for-the-badge&logo=docker)
 ![React](https://img.shields.io/badge/React-19.1.1-61dafb?style=for-the-badge&logo=react)
 ![Node.js](https://img.shields.io/badge/Node.js-18+-green?style=for-the-badge&logo=node.js)
 
 **A modern, lightweight torrent streaming application with instant playback**
 
-<img src="https://raw.githubusercontent.com/hotheadhacker/seedbox-lite/refs/heads/main/screenshots/details-screen.png" alt="SeedBox Lite Screenshot" width="80%"/>
+<img src="https://raw.githubusercontent.com/Chege-Samwel/seedbox-lite/refs/heads/main/screenshots/details-screen.png" alt="Heiken Screenshot" width="80%"/>
 
-[View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
+[View all screenshots](https://github.com/Chege-Samwel/seedbox-lite/tree/main/screenshots)
 
 [Features](#-features) • [Screenshots](#-screenshots) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Documentation](#-documentation)
+
+> 📖 **New to Heiken?** Follow the **[Step-by-Step Setup Guide](SETUP-GUIDE.md)**
+> — Netlify static UI + engine on your laptop + Cloudflare tunnel, phones and
+> Android TV included.
 
 </div>
 
 ## 🚀 Overview
 
-SeedBox Lite is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
+Heiken is a cutting-edge torrent streaming platform that allows you to watch movies and TV shows instantly without waiting for complete downloads. Built with modern web technologies, it provides a Netflix-like experience with powerful torrent capabilities.
 
 ## 🎟️ Streaming Suite (v2)
 
@@ -105,7 +109,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 
 ## 📸 Screenshots
 
-[View all screenshots](https://github.com/hotheadhacker/seedbox-lite/tree/main/screenshots)
+[View all screenshots](https://github.com/Chege-Samwel/seedbox-lite/tree/main/screenshots)
 
 ## 🍃 Small hosts & free tiers (Render/Railway, laptops)
 
@@ -169,7 +173,7 @@ LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start
 
 ```bash
 # Clone the repository
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Start with Docker Compose
@@ -183,7 +187,7 @@ open http://localhost:5174
 
 ```bash
 # Clone and install dependencies
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -227,7 +231,7 @@ pm2 start ecosystem.config.js
 
 #### Step 1: Clone Repository
 ```bash
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 ```
 
@@ -286,7 +290,7 @@ npm install -g pm2
 #### Step 2: Application Setup
 ```bash
 # Clone repository
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -329,7 +333,7 @@ cd ../client/dist
 npx serve -s . -l 5174
 
 # Or use PM2 for frontend
-pm2 start "npx serve -s . -l 5174" --name "seedbox-frontend"
+pm2 start "npx serve -s . -l 5174" --name "heiken-frontend"
 ```
 
 #### Step 5: PM2 Management
@@ -352,7 +356,7 @@ pm2 startup
 
 #### Step 1: Clone and Install
 ```bash
-git clone https://github.com/hotheadhacker/seedbox-lite.git
+git clone https://github.com/Chege-Samwel/seedbox-lite.git
 cd seedbox-lite
 
 # Install backend dependencies
@@ -376,7 +380,7 @@ cp .env.example .env
 NODE_ENV=development
 SERVER_PORT=3000
 SERVER_HOST=localhost
-ACCESS_PASSWORD=seedbox123
+ACCESS_PASSWORD=change-me
 FRONTEND_URL=http://localhost:5173
 ```
 
@@ -412,8 +416,8 @@ curl http://localhost:3001/api/cache/stats
 ```bash
 # Check PM2 status
 pm2 list
-pm2 logs seedbox-backend
-pm2 logs seedbox-frontend
+pm2 logs heiken-backend
+pm2 logs heiken-frontend
 
 # Test API endpoints
 curl http://localhost:3001/api/health
@@ -530,8 +534,8 @@ docker-compose up --build
 docker system prune -a
 
 # Check container logs
-docker-compose logs seedbox-backend
-docker-compose logs seedbox-frontend
+docker-compose logs heiken-backend
+docker-compose logs heiken-frontend
 ```
 
 #### PM2 Issues
@@ -637,8 +641,8 @@ For high-traffic deployments:
 
 ### Getting Help
 - 📖 [Documentation](./docs/)
-- 🐛 [Issue Tracker](https://github.com/hotheadhacker/seedbox-lite/issues)
-- 💬 [Discussions](https://github.com/hotheadhacker/seedbox-lite/discussions)
+- 🐛 [Issue Tracker](https://github.com/Chege-Samwel/seedbox-lite/issues)
+- 💬 [Discussions](https://github.com/Chege-Samwel/seedbox-lite/discussions)
 
 ### Contributing
 1. Fork the repository
@@ -649,17 +653,17 @@ For high-traffic deployments:
 
 ## ⚠️ Legal Disclaimer
 
-**IMPORTANT: Please read this disclaimer carefully before using SeedBox Lite.**
+**IMPORTANT: Please read this disclaimer carefully before using Heiken.**
 
-SeedBox Lite is an open-source project provided for educational and personal use only. We do not endorse, promote, or facilitate copyright infringement, illegal streaming, or piracy in any form. This software is designed to be used with legal content only.
+Heiken is an open-source project provided for educational and personal use only. We do not endorse, promote, or facilitate copyright infringement, illegal streaming, or piracy in any form. This software is designed to be used with legal content only.
 
 - We do not host, store, or distribute any content. All torrents and media are accessed through your own connections.
 - This application is intended for use with content that you have the legal right to access and stream.
 - Users are solely responsible for how they use this software and for ensuring compliance with all applicable laws in their jurisdiction.
-- The creators and contributors of SeedBox Lite take no responsibility for how this software is used.
+- The creators and contributors of Heiken take no responsibility for how this software is used.
 - Using torrents to download or share copyrighted materials without permission may be illegal in your country.
 
-By using SeedBox Lite, you acknowledge that you understand these terms and agree to use the software responsibly and legally.
+By using Heiken, you acknowledge that you understand these terms and agree to use the software responsibly and legally.
 
 ## 📄 License
 

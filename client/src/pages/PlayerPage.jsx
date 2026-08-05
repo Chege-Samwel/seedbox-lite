@@ -833,6 +833,11 @@ export default function PlayerPage() {
             // metadata-only preload: fetch the moov header, never the whole
             // file (the server's warmup window owns what gets downloaded).
             preload="metadata"
+            // Android TV / Android WebView inline playback (UC / X5 / TV
+            // browsers otherwise hijack fullscreen or play in a popup).
+            x5-playsinline=""
+            webkit-playsinline=""
+            disablepictureinpicture="false"
             // NB: no crossOrigin="anonymous" — several archive.org edge
             // nodes omit CORS headers, which turns that attribute into a
             // hard playback death-sentence (ERR_FAILED). Without it the

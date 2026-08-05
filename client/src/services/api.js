@@ -22,11 +22,15 @@ export const apiBase = () => {
   if (saved !== null) return saved;
   return BAKED_IS_TEMPLATE ? '' : BAKED_BASE;
 };
-const setBaseOverride = (b) => {
-  if (b) localStorage.setItem(OVERRIDE_KEY, b);
+/** Point the whole app at a different Heiken server (split hosting with a
+ *  changing tunnel URL). Empty string clears the override. */
+export const setApiBaseOverride = (b) => {
+  const clean = String(b || '').trim().replace(/\/+$/, '');
+  if (clean) localStorage.setItem(OVERRIDE_KEY, clean);
   else localStorage.removeItem(OVERRIDE_KEY);
   window.dispatchEvent(new Event('sb_api_base_changed'));
 };
+const setBaseOverride = (b) => { setApiBaseOverride(b); };
 const TOKEN_KEY = 'sb_session_token';
 const CONSENT_KEY = 'sb_consent'; // 'granted' | 'denied'
 

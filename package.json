@@ -1,7 +1,7 @@
 {
-  "name": "seedbox-lite",
+  "name": "heiken",
   "version": "1.0.0",
-  "description": "A lightweight torrent streaming application",
+  "description": "Heiken — personal streaming cinema",
   "scripts": {
     "predev": "node scripts/ensure-deps.js",
     "prestart": "node scripts/ensure-deps.js",

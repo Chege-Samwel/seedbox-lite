@@ -26,7 +26,7 @@ export default function NavBar() {
       <header className={`topnav ${solid ? 'solid' : ''}`}>
         <NavLink to="/" className="brand">
           <span className="leaf"><Leaf size={22} /></span>
-          SeedBox<small>Lite</small>
+          Heiken
         </NavLink>
         <nav className="nav-links">
           {tabs.map(({ to, label, end }) => (

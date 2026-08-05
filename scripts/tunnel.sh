@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. Starts the app: LITE_MODE=true DISABLE_TRANSCODE=true
-#      MAX_ACTIVE_TORRENTS=2 npm start   (UI+API+engine on :3000)
+#      MAX_ACTIVE_TORRENTS=5 npm start   (UI+API+engine on :3000)
 #   2. Opens a Cloudflare quick tunnel → prints a public https:// URL
 #      (Ctrl+C stops both).
 #
@@ -34,7 +34,7 @@ fi
 
 # ── 1. Start the app (cool profile) ────────────────────────────────
 echo "🌱 Starting Seedbox Lite (LITE_MODE, transcode off, max 2 torrents)…"
-LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=2 npm start &
+LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start &
 APP_PID=$!
 cleanup() {
   echo

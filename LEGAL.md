@@ -1,6 +1,6 @@
 # Legal Notice & Content Responsibility
 
-**SeedBox Lite is a neutral media tool.** It ships with no media content and no links to
+**Heiken is a neutral media tool.** It ships with no media content and no links to
 copyrighted catalogs. The built-in browse experience sources the Internet Archive's
 public-domain and openly licensed collections only.
 
