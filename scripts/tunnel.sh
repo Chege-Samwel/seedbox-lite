@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-# tunnel.sh — host Seedbox Lite (UI + API + torrent engine) on THIS
-# machine and expose it publicly with a free Cloudflare quick tunnel.
+# tunnel.sh — start Heiken (UI + API + engine) and expose it publicly.
 #
 #   ./scripts/tunnel.sh
 #
-# What it does:
-#   1. Starts the app: LITE_MODE=true DISABLE_TRANSCODE=true
-#      MAX_ACTIVE_TORRENTS=5 npm start   (UI+API+engine on :3000)
-#   2. Opens a Cloudflare quick tunnel → prints a public https:// URL
-#      (Ctrl+C stops both).
+# Automatically picks the best tunnel available on this machine:
+#   1. ngrok            (preferred — `npm start` auto-starts it, see
+#                        scripts/serve.js; set NGROK_URL for a FIXED URL)
+#   2. cloudflared      (fallback: free quick tunnel, URL changes each run)
 #
-# The URL is DIFFERENT each run (trycloudflare.com). For a stable URL
-# you'll visit every time, set up a NAMED tunnel instead (see below).
-#
-# Note: the app serves the UI and the API from the same origin, so the
-# tunnel URL just works — no VITE_API_BASE_URL needed.
+# Either way it prints the public URL. Ctrl+C stops everything.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT="${PORT:-3000}"
 
+# ── ngrok path (preferred) ─────────────────────────────────────────
+if command -v ngrok >/dev/null 2>&1; then
+  echo "🕳️  ngrok detected — starting Heiken (ngrok auto-tunnels on npm start)."
+  echo "    For a FIXED URL, claim a free static domain once (ngrok dashboard →"
+  echo "    Domains → New Domain) and set NGROK_URL=https://<name>.ngrok-free.app"
+  exec npm start
+fi
+
+# ── cloudflared fallback ───────────────────────────────────────────
 if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "✖ cloudflared is not installed."
-  echo "  Ubuntu/Debian:"
-  echo "    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o /tmp/cloudflared.deb"
-  echo "    sudo dpkg -i /tmp/cloudflared.deb"
-  echo "  macOS:  brew install cloudflared"
-  echo "  Other:  https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+  echo "✖ Neither ngrok nor cloudflared is installed."
+  echo "  Install one for a public URL:"
+  echo "    ngrok:       https://ngrok.com/download"
+  echo "    cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
   exit 1
 fi
 
-# ── 1. Start the app (cool profile) ────────────────────────────────
-echo "🌱 Starting Seedbox Lite (LITE_MODE, transcode off, max 2 torrents)…"
+echo "🌱 Starting Heiken (LITE_MODE, transcode off, max 5 torrents)…"
 LITE_MODE=true DISABLE_TRANSCODE=true MAX_ACTIVE_TORRENTS=5 npm start &
 APP_PID=$!
 cleanup() {
@@ -45,7 +45,6 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-# Wait for the API (the first run also builds the client, so be patient)
 echo "⏳ Waiting for http://localhost:$PORT/api/health …"
 ok=0
 for _ in $(seq 1 90); do
@@ -60,7 +59,6 @@ if [ "$ok" != "1" ]; then
 fi
 echo "✓ App is up."
 
-# ── 2. Open the tunnel ─────────────────────────────────────────────
 echo
 echo "══════════════════════════════════════════════════════════════"
 echo "  🌐 PUBLIC URL — open this in your browser (or share it):"
