@@ -18,6 +18,7 @@ Stream Torrents Instantly
 [Features](#-features) • [Screenshots](#-screenshots) • [Quick Start](#-quick-start) • [Installation](#-installation) • [Documentation](#-documentation)
 
 > 📖 **New to Heiken?** Follow the **[Step-by-Step Setup Guide](SETUP-GUIDE.md)**
+> · 📱 **Android APK** (phones & TV, no Play Store): **[ANDROID-APK.md](ANDROID-APK.md)**
 > — Netlify static UI + engine on your laptop + Cloudflare tunnel, phones and
 > Android TV included.
 

@@ -144,6 +144,10 @@ the link **fixed** (e.g. `https://heiken.yourdomain.com`):
    `←`/`→` = ±10s seek, `Space` = play/pause, `F` = fullscreen, `M` = mute).
 4. Add to home screen if your TV browser supports it (TV Bro does).
 
+> 💾 Want a real installable **APK** (side-load, no Play Store) instead of the
+> PWA? See **[ANDROID-APK.md](ANDROID-APK.md)** — phones and Android TV,
+> no domain required.
+
 ### "Do I need a real Android app (APK) for phones/TVs?"
 
 **No — Heiken is a PWA, and that's the right call here.** A Play Store APK
