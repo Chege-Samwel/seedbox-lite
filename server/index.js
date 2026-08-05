@@ -2435,9 +2435,12 @@ function disableSeedingForCompletedTorrents() {
 // ── Static client serving (production) ─────────────────────────────────
 // `npm start` builds the client and this same process serves it — one
 // command, one port, one origin (no CORS setup, no VITE_API_BASE_URL).
-// Without this, production mode answered "Cannot GET /" and apps pointed at
-// the server URL bounced around client routes that didn't exist server-side.
-if (isProduction) {
+// ── Static client serving (production, OPTIONAL) ─────────────────
+// Default OFF: with split hosting (static UI on Netlify/Render + engine on
+// this box), the frontend lives elsewhere and this server must be API-only.
+// Set SERVE_UI=1 to have this box also serve the built client (all-in-one
+// single-port mode, e.g. `npm start` with no separate host).
+if (isProduction && process.env.SERVE_UI === '1') {
   const distDir = path.join(__dirname, '..', 'client', 'dist');
   if (fs.existsSync(path.join(distDir, 'index.html'))) {
     app.use(express.static(distDir, { index: false, maxAge: '1h' }));
@@ -2451,6 +2454,8 @@ if (isProduction) {
   } else {
     console.log('⚠️  client/dist not found — running API-only. Build the UI: cd client && npm run build (or use: npm start from the repo root)');
   }
+} else if (isProduction) {
+  console.log('🖥️  API-only mode (frontend served by Netlify/Render). Set SERVE_UI=1 to serve the UI from this port too.');
 }
 
 // Start server

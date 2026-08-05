@@ -13,7 +13,9 @@
     "start": "node scripts/serve.js",
     "tickets": "cd server && node bin/tickets.js",
     "new-ticket": "cd server && node bin/tickets.js --new Recovery 365",
-    "apk": "./scripts/build-apk.sh"
+    "apk": "./scripts/build-apk.sh",
+    "serve": "node scripts/serve.js",
+    "ngrok": "ngrok http 3000"
   },
   "keywords": [
     "torrent",

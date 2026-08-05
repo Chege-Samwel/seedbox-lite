@@ -8,7 +8,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "cd .. && npm start"
+    "start": "cd .. && npm run serve"
   },
   "dependencies": {
     "lucide-react": "^0.539.0",
