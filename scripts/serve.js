@@ -45,9 +45,15 @@ if (build.error || build.status !== 0) {
   process.exit(build.status || 1);
 }
 
-// 2) Start the server
+// 2) Start the server — light profile by default (explicit env vars win).
 console.log('🌱 Starting Heiken server…');
 const env = { ...process.env, NODE_ENV: process.env.NODE_ENV || 'production' };
+// "Runs lightly" out of the box: small buffer windows, transcode off, and a
+// sane concurrent-torrent cap. Set any of these explicitly to override.
+if (env.LITE_MODE === undefined) env.LITE_MODE = 'true';
+if (env.DISABLE_TRANSCODE === undefined) env.DISABLE_TRANSCODE = 'true';
+if (env.MAX_ACTIVE_TORRENTS === undefined) env.MAX_ACTIVE_TORRENTS = '5';
+console.log(`🍃 Profile: LITE_MODE=${env.LITE_MODE} DISABLE_TRANSCODE=${env.DISABLE_TRANSCODE} MAX_ACTIVE_TORRENTS=${env.MAX_ACTIVE_TORRENTS}`);
 const server = spawn('node', ['index.js'], { cwd: path.join(root, 'server'), env, stdio: 'inherit' });
 
 let ngrok = null;

@@ -1,7 +1,7 @@
 {
   "name": "heiken",
   "version": "1.0.0",
-  "description": "Heiken — personal streaming cinema",
+  "description": "Heiken \u2014 personal streaming cinema",
   "scripts": {
     "predev": "node scripts/ensure-deps.js",
     "prestart": "node scripts/ensure-deps.js",
@@ -12,9 +12,14 @@
     "build": "cd client && npm run build",
     "start": "node scripts/serve.js",
     "tickets": "cd server && node bin/tickets.js",
-    "new-ticket": "cd server && node bin/tickets.js --new Recovery 365"
+    "new-ticket": "cd server && node bin/tickets.js --new Recovery 365",
+    "apk": "./scripts/build-apk.sh"
   },
-  "keywords": ["torrent", "streaming", "webtorrent"],
+  "keywords": [
+    "torrent",
+    "streaming",
+    "webtorrent"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {

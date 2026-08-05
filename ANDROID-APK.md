@@ -38,12 +38,16 @@ whose URL changes every run. That's fine: the login screen has a
 # once: install Java
 sudo apt install openjdk-17-jdk-headless        # Ubuntu/Debian
 
-# build (first run downloads Android tooling automatically)
+# build (first run downloads the Android SDK + Gradle deps automatically)
 ./scripts/build-apk.sh                          # → dist-apk/heiken.apk
+# or pass the URL explicitly (a path like /login is stripped automatically):
+./scripts/build-apk.sh https://heikenapp.netlify.app
 ```
 
-That wraps the Netlify UI in a WebView app named **Heiken**
-(`com.heiken.app`), with the new icon.
+Uses Google's **Bubblewrap** to wrap the Heiken PWA in a fullscreen Android
+app named **Heiken** (`com.heiken.app`) with the new icon. First run
+installs the Android SDK (~1–2 GB) and Gradle dependencies — a few minutes,
+then it's cached.
 
 > No domain? Doesn't matter — see "No domain in Cloudflare" below.
 

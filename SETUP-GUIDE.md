@@ -79,19 +79,29 @@ nano .env        # fill in:
 ### 2c. Go live (every time you want it on)
 
 ```bash
-./scripts/tunnel.sh
+npm start            # at the REPO ROOT — builds, starts the engine lightly,
+                     # and auto-starts ngrok (if installed & configured)
+# or:  ./scripts/tunnel.sh   (same, picks ngrok then cloudflared)
 ```
 
-- It starts the engine (`npm start`) **and** opens the tunnel.
-- It prints `https://<random>.trycloudflare.com` — **that's your server URL**.
+- **Runs lightly by default** — `npm start` sets `LITE_MODE=true`,
+  `DISABLE_TRANSCODE=true`, `MAX_ACTIVE_TORRENTS=5` unless you override
+  them. (Explicit env vars win: `LITE_MODE=false npm start` …)
+- With ngrok installed + authtoken set, it prints the **public URL**
+  (`https://<random>.ngrok-free.app`, or your fixed `NGROK_URL`).
 - The owner ticket prints in the server log on **first boot only** — copy it
   (`SB-XXXX-XXXX`). Lost it? `npm run tickets`.
 - Ctrl+C stops both.
 
-> **Quick tunnel URL changes every run.** On each device, when the URL
-> changes, just update the **"Server address" box on the Heiken login
-> screen** (no Netlify rebuild). For a permanent URL, set up a named tunnel
-> once (see `DEPLOYMENT.md` §C2) and put it in `VITE_API_BASE_URL` instead.
+> ⚠️ Run `npm start` from the **repo root** (`~/…/seedbox-lite-…`), not from
+> `client/`. (If you're in `client/`, `npm start` now auto-redirects to the
+> root anyway.)
+
+> **Tunnel URL changes every run.** On each device, update the **"Server
+> address" box on the Heiken login screen** (no Netlify rebuild). For a
+> permanent URL: claim a free ngrok static domain and set
+> `NGROK_URL=https://<name>.ngrok-free.app` in `.env` — then it never
+> changes.
 
 ### 2d. Permanent URL (you already created a named tunnel — finish it)
 
