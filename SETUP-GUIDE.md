@@ -93,6 +93,33 @@ nano .env        # fill in:
 > screen** (no Netlify rebuild). For a permanent URL, set up a named tunnel
 > once (see `DEPLOYMENT.md` §C2) and put it in `VITE_API_BASE_URL` instead.
 
+### 2d. Permanent URL (you already created a named tunnel — finish it)
+
+You created the tunnel **"Heiken"** in the Cloudflare dashboard — it's
+**healthy** but has **0 routes**, which is why it serves nothing yet. To make
+the link **fixed** (e.g. `https://heiken.yourdomain.com`):
+
+1. **Add a route** (Cloudflare dashboard → your tunnel "Heiken" → **Routes →
+   Add route**):
+   - **Hostname:** `heiken.<your-domain.com>` (a subdomain of a domain on
+     your Cloudflare account)
+   - **Service:** `http://localhost:3000` (the engine on your laptop)
+2. **Run the tunnel on the laptop** (needs the tunnel token/credentials — the
+   dashboard "Install and run" gives you the command, or if you installed
+   cloudflared locally):
+   ```bash
+   cloudflared tunnel run heiken
+   ```
+3. The tunnel now serves the **whole Heiken app** (UI + API) at the fixed URL.
+4. Since the URL never changes, you can **bake it into the UI** instead of
+   typing it per-device: set `VITE_API_BASE_URL=https://heiken.your-domain.com`
+   in Netlify's env vars, redeploy. **Then the "Server address" box is never
+   needed** on any device.
+
+> The dashboard shows **1 active replica** (your EliteBook, IP
+> `102.206.97.58`, healthy) — that's the tunnel process already running.
+> Adding the route + DNS is all that's missing for a permanent link.
+
 ---
 
 ## Part 3 — Phones & Android TV
@@ -116,6 +143,23 @@ nano .env        # fill in:
    player respond to arrow keys + Enter (the player already maps
    `←`/`→` = ±10s seek, `Space` = play/pause, `F` = fullscreen, `M` = mute).
 4. Add to home screen if your TV browser supports it (TV Bro does).
+
+### "Do I need a real Android app (APK) for phones/TVs?"
+
+**No — Heiken is a PWA, and that's the right call here.** A Play Store APK
+would just be a thin wrapper around this same website, needs a $25 Play
+developer account, must be side-loaded or distributed per device, and gives
+you nothing extra. The PWA:
+
+- **Installs like an app**: Chrome menu → **"Add to Home screen"** →
+  gets its own icon, opens fullscreen standalone, lives in the app drawer.
+  Heiken shows an **install hint** on first visits (it listens for the
+  browser's install prompt and falls back to a "how to" note on devices
+  that don't fire one, like some TV browsers).
+- **Works on both** Android phones and Android TV with the same URL — no
+  APK to build/sign/maintain, no app-store approval.
+- **One codebase = one deploy** (your Netlify build). Update once,
+  every device gets it on next load.
 
 ### Notes that make it work well on TV/phone
 - Video plays **inline** (no pop-out player) and the custom player handles

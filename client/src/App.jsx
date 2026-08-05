@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate, useLocation, matchPat
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './hooks/useToast';
 import NavBar from './components/NavBar';
+import InstallHint from './components/InstallHint';
 import { ConsentBanner, LegalNotice } from './components/ConsentAndLegal';
 import LoginPage from './pages/LoginPage';
 import HomePage from './pages/HomePage';
@@ -75,6 +76,7 @@ export default function App() {
         <Router>
           <AppRoutes />
           <ConsentBanner />
+          <InstallHint />
         </Router>
       </ToastProvider>
     </AuthProvider>
