@@ -209,12 +209,19 @@ module.exports = function mount(app) {
   // serve the last good copy when the archive is unreachable — this kills
   // the multi-second cold-loads and most of the repeat CPU on small hosts.
   let homeCache = { at: 0, data: null };
+  let homeOfflineUntil = 0; // short-circuit: remember "IA unreachable" so a dead archive isn't re-fanned-out on every Home visit
   app.get('/api/browse/home', requireSession, async (_req, res) => {
     const now = Date.now();
     const freshMs = tuning.browseCacheMin * 60 * 1000;
     if (homeCache.data && now - homeCache.at < freshMs) return res.json(homeCache.data);
-    const data = await withFallback(ia.home(), 20000, homeCache.data || { rows: [], offline: true });
-    if (data && !data.offline) homeCache = { at: now, data };
+    if (now < homeOfflineUntil) return res.json({ rows: [], offline: true });
+    const data = await withFallback(ia.home(), 12000, homeCache.data || { rows: [], offline: true });
+    if (data && !data.offline) {
+      homeCache = { at: now, data };
+      homeOfflineUntil = 0;
+    } else {
+      homeOfflineUntil = now + 90 * 1000;
+    }
     res.json(data);
   });
 

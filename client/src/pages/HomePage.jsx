@@ -17,16 +17,24 @@ export default function HomePage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    (async () => {
-      const [homeRes, histRes, libRes] = await Promise.allSettled([
-        getHome(), getHistory(), getLibrary(),
-      ]);
-      if (cancelled) return;
-      setHome(homeRes.status === 'fulfilled' ? homeRes.value : { rows: [], offline: true });
-      setHistory(histRes.status === 'fulfilled' ? histRes.value.history : []);
-      setLibrary(libRes.status === 'fulfilled' ? libRes.value.items : []);
-      setLoading(false);
-    })();
+    // Resolve each section independently: history + library are fast local
+    // reads and must render immediately — a slow/unreachable archive.org
+    // (the catalog) used to block the WHOLE page via Promise.allSettled.
+    let localDone = false;
+    const markLocalDone = () => {
+      if (!localDone) { localDone = true; if (!cancelled) setLoading(false); }
+    };
+    getHistory()
+      .then((h) => { if (!cancelled) setHistory(h.history || []); })
+      .catch(() => { if (!cancelled) setHistory([]); })
+      .finally(markLocalDone);
+    getLibrary()
+      .then((l) => { if (!cancelled) setLibrary(l.items || []); })
+      .catch(() => { if (!cancelled) setLibrary([]); })
+      .finally(markLocalDone);
+    getHome()
+      .then((h) => { if (!cancelled) setHome(h || { rows: [], offline: true }); })
+      .catch(() => { if (!cancelled) setHome({ rows: [], offline: true }); });
     return () => { cancelled = true; };
   }, [reloadTick]);
 
