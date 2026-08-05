@@ -7,39 +7,59 @@
  * 'dotenv'". This script installs whatever is missing (root, server,
  * client) so first run just works. It exits instantly when everything is
  * already installed, so it adds no overhead on later runs.
+ *
+ * Robustness: a present `node_modules` directory is NOT enough — a Ctrl+C'd
+ * install can leave it half-written. We also verify that each package's
+ * required modules actually exist, and reinstall any that don't.
  */
 const { existsSync } = require('fs');
 const { spawnSync } = require('child_process');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
+
+// Minimal module list per package. If any of these is missing from
+// node_modules, that package gets reinstalled.
+const REQUIRED = {
+  root: ['concurrently'],
+  server: ['dotenv', 'express', 'cors', 'webtorrent', 'multer'],
+  client: ['vite', 'react', 'react-dom', 'react-router-dom', 'lucide-react'],
+};
+
+function needsInstall(dir, name) {
+  if (!existsSync(path.join(dir, 'node_modules'))) return true;
+  for (const m of REQUIRED[name]) {
+    if (!existsSync(path.join(dir, 'node_modules', m, 'package.json'))) return true;
+  }
+  return false;
+}
+
 const targets = [
-  [root, 'root'],
-  [path.join(root, 'server'), 'server'],
-  [path.join(root, 'client'), 'client'],
-];
+  ['root', root],
+  ['server', path.join(root, 'server')],
+  ['client', path.join(root, 'client')],
+].filter(([name, dir]) => needsInstall(dir, name));
 
-const missing = targets.filter(([dir]) => !existsSync(path.join(dir, 'node_modules')));
-
-if (!missing.length) {
+if (!targets.length) {
   console.log('✓ Dependencies already installed (root, server, client).');
   process.exit(0);
 }
 
-console.log(`\n📦 Installing dependencies for: ${missing.map(([, name]) => name).join(', ')}`);
-console.log('   This can take a minute or two on first run. It happens only once.\n');
+console.log(`\n📦 Installing missing dependencies: ${targets.map(([n]) => n).join(', ')}`);
+console.log('   This happens once (a minute or two). The ⠹ spinner you see is npm');
+console.log('   working — it is NOT stuck. Press Ctrl+C only if you want to stop.\n');
 
-for (const [dir, name] of missing) {
-  console.log(`→ npm install (${name})`);
+let failed = false;
+for (const [name, dir] of targets) {
+  console.log(`→ npm install (${name})…`);
   const r = spawnSync('npm', ['install', '--no-audit', '--no-fund'], { cwd: dir, stdio: 'inherit' });
-  if (r.error) {
-    console.error(`\n✖ Failed to run npm install in ${name}: ${r.error.message}`);
-    process.exit(1);
-  }
-  if (r.status !== 0) {
-    console.error(`\n✖ npm install failed in ${name} (exit ${r.status}).`);
-    process.exit(r.status || 1);
+  if (r.error || r.status !== 0) {
+    console.error(`✖ npm install failed in ${name}. Run it manually:`);
+    console.error(`     cd ${dir} && npm install`);
+    failed = true;
+  } else {
+    console.log(`  ✓ ${name} ready`);
   }
 }
-
+if (failed) process.exit(1);
 console.log('\n✓ Dependencies ready. Starting the app…\n');
