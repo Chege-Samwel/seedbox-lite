@@ -2,6 +2,8 @@ import React, { useCallback, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 
 const ToastContext = React.createContext(() => {});
+// This module intentionally co-locates the provider and hook for the toast boundary.
+// eslint-disable-next-line react-refresh/only-export-components
 export const useToast = () => React.useContext(ToastContext);
 
 export function ToastProvider({ children }) {

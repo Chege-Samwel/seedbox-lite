@@ -416,8 +416,17 @@ export default function PlayerPage() {
           const fileName = details?.files?.[fileIndex]?.name || item?.fileName || '';
           // Title: user-set > derived-from-file-names (series shared part) > magnet name
           const derivedTitle = details?.derived?.title;
-          const title = (item && !item.titleAuto && item.title) || locationMeta.title
+          // A feed episode can reuse one magnet for many files. Route state
+          // is therefore authoritative for the selected episode; the
+          // library record is only the durable fallback for a direct revisit.
+          const title = locationMeta.title || (item && !item.titleAuto && item.title)
             || derivedTitle || item?.title || details?.torrent?.name || 'Pipeline item';
+          const selectedKind = locationMeta.kind || item?.kind || (details?.derived?.isSeries ? 'episode' : 'movie');
+          const selectedExtra = locationMeta.extra || (item ? { season: item.season, episode: item.episode, showKey: item.showName } : undefined);
+          const selectedSubtitle = locationMeta.subtitle
+            || (selectedKind === 'episode' && selectedExtra?.season != null
+              ? `S${selectedExtra.season} · E${selectedExtra.episode ?? '?'}`
+              : (fileName || derivedTitle || ''));
 
           const embedded = (details?.files || [])
             .filter((f) => /\.(srt|vtt)$/i.test(f.name))
@@ -425,13 +434,12 @@ export default function PlayerPage() {
           setTracks(embedded);
           setInfo({
             title,
-            subtitle: item?.kind === 'episode' && item?.season != null
-              ? `S${item.season} · E${item.episode ?? '?'}`
-              : (fileName || derivedTitle || ''),
-            kind: item?.kind || (details?.derived?.isSeries ? 'episode' : 'movie'),
-            poster: item?.poster || null, backdrop: item?.backdrop || null,
+            subtitle: selectedSubtitle,
+            kind: selectedKind,
+            poster: locationMeta.poster || item?.poster || null,
+            backdrop: locationMeta.backdrop || item?.backdrop || null,
             src: null, // attached on warmup ready
-            extra: item ? { season: item.season, episode: item.episode, showKey: item.showName } : undefined,
+            extra: selectedExtra,
             fileIndex,
           });
           await beginWarmup(gen, magnetRef.current, fileIndex, startPos);

@@ -12,6 +12,7 @@ import { ArchiveDetails, ShowDetails } from './pages/DetailsPage';
 import PlayerPage from './pages/PlayerPage';
 import LibraryPage from './pages/LibraryPage';
 import HistoryPage from './pages/HistoryPage';
+import FeedDetailsPage from './pages/FeedDetailsPage';
 import AdminPage from './pages/AdminPage';
 import './styles/stream.css';
 
@@ -58,6 +59,7 @@ function AppRoutes() {
         <Route path="/" element={<Protected><HomePage /></Protected>} />
         <Route path="/search" element={<Protected><SearchPage /></Protected>} />
         <Route path="/title/archive/:identifier" element={<Protected><ArchiveDetails /></Protected>} />
+        <Route path="/title/feed/:infoHash" element={<Protected><FeedDetailsPage /></Protected>} />
         <Route path="/title/show/:name" element={<Protected><ShowDetails /></Protected>} />
         <Route path="/watch/:source" element={<Protected><PlayerPage /></Protected>} />
         <Route path="/library" element={<Protected><LibraryPage /></Protected>} />

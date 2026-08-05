@@ -33,6 +33,7 @@ Heiken is a cutting-edge torrent streaming platform that allows you to watch mov
 A complete, invite-only personal cinema layered on top of the streaming engine:
 
 - **Ticket login system** — users sign in with ticket codes (`SB-XXXX-XXXX`) issued from the **admin panel** (`/admin`). Tickets can be **discontinued or renewed** at any time; sessions are validated on app boot and every request, so a revoked ticket kills access immediately. An owner ticket is generated on first boot and printed to the server console.
+- **RSS home catalog** — Home reads the four configured movie/TV RSS views (latest and top 100), sorts newest entries first, keeps a fixed offline snapshot, resolves artwork from the title, and gives season packs an episode/file list when the torrent exposes multiple videos.
 - **Internet Archive catalog (legal)** — browse curated rows (classics, sci-fi, horror, silent era, cartoons, documentaries), search the full public-domain catalog, and stream directly with progressive HTTP playback — no torrent needed for archive content.
 - **Magnet pipeline (in-memory)** — users queue magnets for content **they have the rights to**; the server holds them in WebTorrent memory. **Nothing downloads when a magnet is added** — warm-up fires on the Play click (or any seek): the server buffers ~**1 minute of media from that exact position** and the player starts the moment the ready-gate is filled, with a live ETA/peer readout. Titles are **auto-derived from the real file names** (season packs collapse to the shared show name). Idle items show **Sleeping 💤** — one tap on ▶ wakes them, even after a server restart or an accidental exit, because loads/warmups are fully deduped. Tunable via `WARM_DEFAULT_MB`, `WARM_READY_MIN_MB`, `WARM_WINDOW_KEEP_MIN`.
 - **Picture library** — every pipeline item automatically gets posters/backdrops/overviews from keywords (title, year, SxxExx parsed from filenames) via TMDB (optional key) → TVMaze → iTunes → OMDb fallback chain. Manual re-lookup + alternate-poster picker included.
@@ -63,7 +64,7 @@ A complete, invite-only personal cinema layered on top of the streaming engine:
 | History | `GET/POST /api/me/history` · `GET/DELETE /api/me/history/:key` · `DELETE /api/me/history` |
 | Tracking | `GET /api/me/shows` · `GET /api/me/shows/:key` · `POST /api/me/shows/watched` |
 
-> **Content policy:** this app does **not** include or support pirate index integrations. It ships with the fully legal Internet Archive catalog and a pipeline for magnets the user is licensed to access. All artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
+> **Content policy:** the operator ships no media files and accepts no responsibility for how users use third-party RSS metadata or magnets. Only queue or play material you are authorized to access. Artwork APIs (TMDB/TVMaze/iTunes/OMDb) are metadata-only.
 
 
 

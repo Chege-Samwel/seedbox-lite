@@ -157,8 +157,10 @@ export async function adminApi(path, adminKey, { method = 'GET', body } = {}) {
   return data;
 }
 
-// ---------- Browse (Internet Archive) ----------
-export const getHome = () => apiFetch('/api/browse/home', { timeoutMs: 25000, retries: 2 });
+// ---------- Browse (RSS home + Internet Archive) ----------
+export const getHome = (refresh = false) => apiFetch(`/api/browse/home${refresh ? '?refresh=1' : ''}`, { timeoutMs: 30000, retries: 2 });
+export const getRssItem = (infoHash) => apiFetch(`/api/rss/item/${encodeURIComponent(infoHash)}`, { timeoutMs: 25000, retries: 1 });
+export const getRssFeeds = () => apiFetch('/api/rss/feeds', { timeoutMs: 12000, retries: 1 });
 export const searchArchive = (q, page = 1) =>
   apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000, retries: 1 });
 export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });

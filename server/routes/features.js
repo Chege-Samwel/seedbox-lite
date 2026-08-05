@@ -1,6 +1,6 @@
 /**
- * Feature router — tickets/auth, admin, Internet Archive browsing,
- * metadata/picture library, and per-user pipeline/history/show-tracking.
+ * Feature router — tickets/auth, admin, RSS home catalog + Internet Archive
+ * browsing, metadata/picture library, and per-user pipeline/history/show-tracking.
  *
  * Mounted from index.js right after express.json() so that the torrent-auth
  * gate registered here runs BEFORE the legacy /api/torrents routes.
@@ -10,6 +10,7 @@ const authStore = require('../lib/authStore');
 const { requireSession, requireAdmin, extractToken } = require('../lib/authMiddleware');
 const ia = require('../lib/iaService');
 const meta = require('../lib/metadataService');
+const rss = require('../lib/rssService');
 const userStore = require('../lib/userStore');
 const tuning = require('../lib/tuning');
 
@@ -202,27 +203,33 @@ module.exports = function mount(app) {
     app.use('/api/torrents', requireSession);
   }
 
-  // ============ INTERNET ARCHIVE (legal catalog) ============
+  // ============ RSS HOME CATALOG ============
 
-  // The home feed is identical for every user and expensive to build
-  // (several upstream IA calls). Cache it for BROWSE_CACHE_MIN minutes and
-  // serve the last good copy when the archive is unreachable — this kills
-  // the multi-second cold-loads and most of the repeat CPU on small hosts.
+  // The home feed is identical for every user. rssService keeps a short
+  // server-side cache and falls back to the fixed catalog when one of the
+  // supplied RSS endpoints is unavailable. Keep the legacy /api/browse/home
+  // path so existing clients and saved bookmarks continue to work.
   let homeCache = { at: 0, data: null };
-  let homeOfflineUntil = 0; // short-circuit: remember "IA unreachable" so a dead archive isn't re-fanned-out on every Home visit
-  app.get('/api/browse/home', requireSession, async (_req, res) => {
+  app.get('/api/browse/home', requireSession, async (req, res) => {
     const now = Date.now();
-    const freshMs = tuning.browseCacheMin * 60 * 1000;
-    if (homeCache.data && now - homeCache.at < freshMs) return res.json(homeCache.data);
-    if (now < homeOfflineUntil) return res.json({ rows: [], offline: true });
-    const data = await withFallback(ia.home(), 12000, homeCache.data || { rows: [], offline: true });
-    if (data && !data.offline) {
-      homeCache = { at: now, data };
-      homeOfflineUntil = 0;
-    } else {
-      homeOfflineUntil = now + 90 * 1000;
-    }
+    const freshMs = Math.max(1, tuning.browseCacheMin) * 60 * 1000;
+    const force = req.query.refresh === '1';
+    if (!force && homeCache.data && now - homeCache.at < freshMs) return res.json(homeCache.data);
+    const data = await withFallback(rss.home({ force }), 18000, homeCache.data || { catalog: 'rss', rows: [], offline: true });
+    homeCache = { at: now, data };
     res.json(data);
+  });
+
+  app.get('/api/rss/item/:infoHash', requireSession, async (req, res) => {
+    const item = await withFallback(rss.getItem(req.params.infoHash), 12000, null);
+    if (!item) return res.status(404).json({ error: 'RSS item not found' });
+    res.json(item);
+  });
+
+  // Explicit feed metadata is useful to clients that want to show a source
+  // menu without duplicating the URLs in the UI.
+  app.get('/api/rss/feeds', requireSession, (_req, res) => {
+    res.json({ feeds: rss.FEEDS });
   });
 
   app.get('/api/browse/search', requireSession, async (req, res) => {
@@ -858,7 +865,7 @@ module.exports = function mount(app) {
     res.json({ ok: true, show });
   });
 
-  console.log('✅ Feature routes mounted (tickets, archive, metadata, pipeline, history, shows)');
+  console.log('✅ Feature routes mounted (tickets, RSS home, archive, metadata, pipeline, history, shows)');
   if (process.env.REQUIRE_AUTH !== 'false') {
     if (process.env.ADMIN_PASSWORD) console.log('🔐 Admin endpoints protected by ADMIN_PASSWORD');
     else console.log('⚠️ ADMIN_PASSWORD not set — admin key defaults to "admin123". Change it in production!');
