@@ -2,27 +2,34 @@
 /**
  * Heiken launcher — `npm start` entry.
  *
- * Builds the client, starts the server, and THEN auto-starts an ngrok
- * tunnel to the server port so the app is publicly reachable without any
- * extra command. Prints the public URL.
+ * Builds the client ONLY when it's stale, starts the server, then
+ * auto-starts an ngrok tunnel. Prints the public URL and per-phase timing
+ * so slow steps are visible.
  *
- * Behavior knobs (env):
+ * Why the conditional build: a full `vite build` runs 3s here / 10-30s on a
+ * laptop on EVERY start. Now the client is rebuilt only when a source file
+ * is newer than client/dist (or dist is missing). Control it with env:
+ *   SKIP_BUILD=1    never build (use existing dist)
+ *   FORCE_BUILD=1   always build
+ *
+ * Tunnel control:
  *   NGROK_URL=https://heiken.ngrok-free.app   your claimed static ngrok
- *                                             domain (fixed URL). Omit to
- *                                             let ngrok assign a random one.
+ *                                             domain (fixed URL).
  *   AUTO_TUNNEL=0                             disable auto-ngrok entirely.
  *
- * If ngrok is not installed, or has no authtoken configured, the server
- * still runs normally (it just prints how to enable the tunnel).
+ * If ngrok is not installed/configured, the server still runs normally.
  */
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const http = require('http');
+const fs = require('fs');
 
 const root = path.join(__dirname, '..');
 const PORT = process.env.SERVER_PORT || 3000;
 const AUTO_TUNNEL = process.env.AUTO_TUNNEL !== '0';
 const NGROK_URL = (process.env.NGROK_URL || '').trim();
+const t0 = Date.now();
+const secs = () => ((Date.now() - t0) / 1000).toFixed(1) + 's';
 
 function hasNgrok() {
   try {
@@ -37,23 +44,49 @@ function ngrokConfigured() {
   } catch { return false; }
 }
 
-// 1) Build the client (same as the old `npm start` did)
-console.log('🏗️  Building client…');
-const build = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'client'), stdio: 'inherit' });
-if (build.error || build.status !== 0) {
-  console.error('✖ Client build failed — see output above.');
-  process.exit(build.status || 1);
+/** Is client/dist missing or older than any source file? */
+function clientNeedsBuild() {
+  if (process.env.FORCE_BUILD === '1') return true;
+  if (process.env.SKIP_BUILD === '1') return false;
+  const distIndex = path.join(root, 'client', 'dist', 'index.html');
+  if (!fs.existsSync(distIndex)) return true;
+  const distTime = fs.statSync(distIndex).mtimeMs;
+  const watchDirs = ['src', 'public', 'vite.config.js', 'package.json', 'index.html'];
+  const newest = watchDirs.reduce((max, rel) => {
+    const p = path.join(root, 'client', rel);
+    if (!fs.existsSync(p)) return max;
+    if (fs.statSync(p).isDirectory()) {
+      let m = 0;
+      for (const f of fs.readdirSync(p)) {
+        const fp = path.join(p, f);
+        try { m = Math.max(m, fs.statSync(fp).mtimeMs); } catch { /* ignore */ }
+      }
+      return Math.max(max, m);
+    }
+    return Math.max(max, fs.statSync(p).mtimeMs);
+  }, 0);
+  return newest > distTime;
+}
+
+// 1) Build the client only when stale
+if (clientNeedsBuild()) {
+  console.log(`[+${secs()}] 🏗️  Client is stale — building (one-time, ~3s here, longer on a laptop)…`);
+  const build = spawnSync('npm', ['run', 'build'], { cwd: path.join(root, 'client'), stdio: 'inherit' });
+  if (build.error || build.status !== 0) {
+    console.error('✖ Client build failed — see output above.');
+    process.exit(build.status || 1);
+  }
+} else {
+  console.log(`[+${secs()}] ✓ Client up to date — skipping build (use FORCE_BUILD=1 or SKIP_BUILD=1 to control).`);
 }
 
 // 2) Start the server — light profile by default (explicit env vars win).
-console.log('🌱 Starting Heiken server…');
+console.log(`[+${secs()}] 🌱 Starting Heiken server…`);
 const env = { ...process.env, NODE_ENV: process.env.NODE_ENV || 'production' };
-// "Runs lightly" out of the box: small buffer windows, transcode off, and a
-// sane concurrent-torrent cap. Set any of these explicitly to override.
 if (env.LITE_MODE === undefined) env.LITE_MODE = 'true';
 if (env.DISABLE_TRANSCODE === undefined) env.DISABLE_TRANSCODE = 'true';
 if (env.MAX_ACTIVE_TORRENTS === undefined) env.MAX_ACTIVE_TORRENTS = '5';
-console.log(`🍃 Profile: LITE_MODE=${env.LITE_MODE} DISABLE_TRANSCODE=${env.DISABLE_TRANSCODE} MAX_ACTIVE_TORRENTS=${env.MAX_ACTIVE_TORRENTS}`);
+console.log(`[+${secs()}] 🍃 Profile: LITE_MODE=${env.LITE_MODE} DISABLE_TRANSCODE=${env.DISABLE_TRANSCODE} MAX_ACTIVE_TORRENTS=${env.MAX_ACTIVE_TORRENTS}`);
 const server = spawn('node', ['index.js'], { cwd: path.join(root, 'server'), env, stdio: 'inherit' });
 
 let ngrok = null;
@@ -110,44 +143,43 @@ function ngrokPublicUrl(cb) {
 }
 
 waitHealth(() => {
-  console.log(`✅ Heiken API up at http://localhost:${PORT}`);
+  console.log(`[+${secs()}] ✅ Heiken API up at http://localhost:${PORT}`);
 
   if (!AUTO_TUNNEL) {
-    console.log('ℹ️  AUTO_TUNNEL=0 — not starting a tunnel. (npm start runs it by default.)');
+    console.log(`[+${secs()}] ℹ️  AUTO_TUNNEL=0 — not starting a tunnel.`);
     return;
   }
   if (!hasNgrok()) {
-    console.log('ℹ️  ngrok not found — running without a tunnel. Install it for a public URL:');
+    console.log(`[+${secs()}] ℹ️  ngrok not found — running without a tunnel. Install it for a public URL:`);
     console.log('      https://ngrok.com/download   then:  ngrok config add-authtoken <your-token>');
-    console.log('   (or set AUTO_TUNNEL=0 to silence this hint)');
     return;
   }
   if (!ngrokConfigured()) {
-    console.log('ℹ️  ngrok is installed but not configured. One-time setup:');
+    console.log(`[+${secs()}] ℹ️  ngrok installed but not configured. One-time setup:`);
     console.log('      ngrok config add-authtoken <your-token>   (from https://dashboard.ngrok.com)');
-    console.log('   Server keeps running without a tunnel until then.');
     return;
   }
 
   const args = ['http', String(PORT)];
   if (NGROK_URL) {
     args.push('--url', NGROK_URL);
-    console.log(`🔗 Starting ngrok → static domain ${NGROK_URL}`);
+    console.log(`[+${secs()}] 🔗 Starting ngrok → static domain ${NGROK_URL}`);
   } else {
-    console.log('🔗 Starting ngrok… (set NGROK_URL=https://heiken.ngrok-free.app for a fixed URL)');
+    console.log(`[+${secs()}] 🔗 Starting ngrok… (set NGROK_URL=https://heiken.ngrok-free.app for a fixed URL)`);
   }
   ngrok = spawn('ngrok', args, { stdio: ['ignore', 'inherit', 'inherit'] });
   ngrok.on('exit', (code) => {
-    if (!stopped && code) console.warn('⚠️  ngrok exited — check the message above (wrong static domain? run once with `ngrok http 3000` to claim one).');
+    if (!stopped && code) console.warn('⚠️  ngrok exited — check the message above.');
   });
   ngrokPublicUrl((url) => {
     if (url) {
-      console.log('\n══════════════════════════════════════════════════════════');
+      console.log(`[+${secs()}]`);
+      console.log('══════════════════════════════════════════════════════════');
       console.log(`  🌐 PUBLIC URL: ${url}`);
       console.log('  Paste it into the login screen "Server address" on each device.');
-      console.log('══════════════════════════════════════════════════════════\n');
+      console.log('══════════════════════════════════════════════════════════');
     } else {
-      console.log('⚠️  Could not read the ngrok URL from its local API — check http://127.0.0.1:4040');
+      console.log(`[+${secs()}] ⚠️  Could not read the ngrok URL from its local API — check http://127.0.0.1:4040`);
     }
   });
 });
