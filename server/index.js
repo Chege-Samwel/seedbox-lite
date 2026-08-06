@@ -72,6 +72,56 @@ const config = {
 
 const app = express();
 
+// ═══════════════════════════════════════════════════════════════
+// CORS Configuration - Permissive mode for split hosting (Netlify UI)
+// Mounted at the very top so all preflights and errors get proper headers
+// ═══════════════════════════════════════════════════════════════
+console.log('🌐 CORS: Allowing all origins with credentials support');
+
+const ALLOWED_CORS_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'X-Requested-With',
+  'Accept',
+  'Origin',
+  'ngrok-skip-browser-warning',
+  'Cache-Control',
+  'Pragma',
+  'Range',
+  'x-admin-key',
+  'x-session-token',
+  'sb-session-token'
+];
+
+app.use(cors({
+  origin: true, // Echo requesting origin dynamically to allow credentials
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+  allowedHeaders: ALLOWED_CORS_HEADERS,
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Retry-After', 'X-Transcode-Quality'],
+  optionsSuccessStatus: 200
+}));
+
+// Fallback headers middleware ensuring preflights always return 200 with matching origin
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD');
+  res.setHeader('Access-Control-Allow-Headers', ALLOWED_CORS_HEADERS.join(','));
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range,Accept-Ranges,Content-Length,Retry-After,X-Transcode-Quality');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
+
 // Add performance monitoring middleware for API endpoints
 app.use((req, res, next) => {
   // Skip for non-API routes
@@ -1210,39 +1260,7 @@ const upload = multer({
   }
 });
 
-// CORS Configuration - Allow all origins
-console.log('🌐 CORS: Allowing ALL origins (permissive mode)');
 
-// Simple CORS configuration allowing all origins
-app.use(cors({
-  origin: true, // Allow all origins
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: [
-    'Content-Type', 
-    'Authorization', 
-    'X-Requested-With',
-    'Accept',
-    'Origin',
-    'ngrok-skip-browser-warning'
-  ],
-  optionsSuccessStatus: 200
-}));
-
-// Additional permissive CORS headers
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With,Accept,Origin,ngrok-skip-browser-warning');
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-  next();
-});
 
 app.use(express.json());
 
