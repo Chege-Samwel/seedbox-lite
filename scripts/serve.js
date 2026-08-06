@@ -48,7 +48,7 @@ process.on('SIGINT', () => stopAll(0));
 process.on('SIGTERM', () => stopAll(0));
 server.on('exit', (code) => { if (!stopped) stopAll(code || 0); });
 
-function waitHealth(cb, tries = 90) {
+function waitHealth(cb, tries = 45) {
   const probe = () => {
     if (server.exitCode != null) {
       console.error('✖ Server exited before becoming healthy — see log above.');
@@ -62,7 +62,15 @@ function waitHealth(cb, tries = 90) {
     });
     req.on('error', retry);
   };
-  const retry = () => { if (tries-- <= 0) return cb(); setTimeout(probe, 1000); };
+  const retry = () => {
+    if (tries-- <= 0) {
+      console.error(`✖ Timed out waiting for Heiken API to respond on http://localhost:${PORT}/api/health`);
+      console.error('👉 Make sure no other process is blocking port ' + PORT + ', or run: cd server && node index.js directly to inspect logs.');
+      stopAll(1);
+      return;
+    }
+    setTimeout(probe, 1000);
+  };
   probe();
 }
 

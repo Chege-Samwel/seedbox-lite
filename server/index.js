@@ -228,6 +228,10 @@ const client = new WebTorrent({
   })
 });
 
+client.on('error', (err) => {
+  console.warn(`⚠️ WebTorrent client warning: ${err.message}`);
+});
+
 // UNIVERSAL STORAGE SYSTEM - Multiple ways to find torrents
 const torrents = {};           // Active torrent objects by infoHash
 const torrentIds = {};         // Original torrent IDs by infoHash
@@ -2481,7 +2485,7 @@ if (isProduction && process.env.SERVE_UI === '1') {
 const PORT = config.server.port;
 const HOST = config.server.host;
 
-app.listen(PORT, "0.0.0.0", () => {
+const serverInstance = app.listen(PORT, "0.0.0.0", () => {
   const serverUrl = `${config.server.protocol}://${HOST}:${PORT}`;
   console.log(`🌱 Heiken server running on ${serverUrl}`);
   console.log(`📱 Frontend URL: ${config.frontend.url}`);
@@ -2501,4 +2505,14 @@ app.listen(PORT, "0.0.0.0", () => {
   if (config.isDevelopment) {
     console.log('🔧 Development mode - Environment variables loaded');
   }
+});
+
+serverInstance.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use by another process.`);
+    console.error(`👉 Stop the other process or run: npx kill-port ${PORT} (or: fuser -k ${PORT}/tcp)`);
+  } else {
+    console.error(`❌ Server failed to start on port ${PORT}:`, err.message);
+  }
+  process.exit(1);
 });
