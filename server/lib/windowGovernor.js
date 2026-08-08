@@ -222,10 +222,23 @@ function create(client, destroyTorrent) {
     selected.set(key, nextRanges);
 
     // Tell the rolling disk store which pieces are protected and its byte
-    // budget (≈ the window ± margins), so it auto-evicts trailing chunks.
+    // budget. The store must keep the ENTIRE file, not just the playhead
+    // window: the browser re-reads the file sequentially as playback
+    // advances, and an evicted piece is UNREADABLE — webtorrent's bitfield
+    // still marks it "verified", so it is never re-requested and the read
+    // stream stalls until the setup timeout 503s ("plays ~3 min then dies").
+    // The store is disk-backed (RAM stays bounded by in-flight buffers), so
+    // keeping the whole file is cheap; the global DISK_CAP and the
+    // governor's disk shed remain as backstops. Ceiling 8GB per file keeps
+    // a pathological multi-GB pack from filling the disk before the shed
+    // can act.
     if (findRolling) {
       const rs = findRolling(torrent);
-      if (rs) rs.setProtectedWindow(startPiece, endPiece, Math.round((back + ahead) * 1.3));
+      if (rs) {
+        const windowCap = Math.round((back + ahead) * 1.3);
+        const fileCap = Math.min(Math.max(file.length, 1), 8 * 1024 * 1024 * 1024);
+        rs.setProtectedWindow(startPiece, endPiece, Math.max(windowCap, fileCap));
+      }
     }
   }
 

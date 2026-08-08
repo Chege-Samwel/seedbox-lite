@@ -22,11 +22,12 @@ function srtToVtt(text) {
 const CAP_SIZES = ['Small', 'Medium', 'Large'];
 const CAP_CLASSES = ['cap-s', 'cap-m', 'cap-l'];
 const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
-const WARM_POLL_MS = 1500;
+const WARM_POLL_MS = 2500; // gate polls — 1.5s was 40 conns/min through ngrok (free-tier limit)
 const WARM_POLL_STALLED_MS = 4000; // dead swarm → poll gently (and cooler)
 const WARM_GIVE_UP_MS = 150000; // 2.5 min of polling before offering manual retry
 const RECONNECT_MAX = 8; // consecutive auto-reconnects before falling back to the warmup gate
 const STALL_WATCHDOG_MS = 15000; // mid-play starve this long ⇒ reattach at playhead
+const STALL_WATCHDOG_TRANSCODE_MS = 30000; // ffmpeg needs time for first bytes — don't churn
 const EARLY_PLAY_MIN_BYTES = 2 * 1024 * 1024; // contiguous bytes before "Play now" unlocks
 
 /** Is a time position already covered by buffered ranges? (avoids flashing
@@ -885,7 +886,7 @@ export default function PlayerPage() {
             // browsers otherwise hijack fullscreen or play in a popup).
             x5-playsinline=""
             webkit-playsinline=""
-            disablepictureinpicture="false"
+            disablePictureInPicture={false}
             // NB: no crossOrigin="anonymous" — several archive.org edge
             // nodes omit CORS headers, which turns that attribute into a
             // hard playback death-sentence (ERR_FAILED). Without it the
@@ -898,15 +899,18 @@ export default function PlayerPage() {
               if (type !== 'torrent') return;
               // Stall self-heal: nudge the server window to the playhead
               warmAt(videoRef.current?.currentTime || 0);
-              // Watchdog: still starved after 15s ⇒ the request silently
+              // Watchdog: still starved this long ⇒ the request silently
               // died (server timeout, reap, proxy). Reattach at the playhead.
+              // Transcoded streams get double the grace — ffmpeg can take
+              // 7-10s for first bytes; a 15s watchdog made the player kill
+              // a healthy transcode and spawn a new ffmpeg (CPU churn).
               if (stallTimer.current) clearTimeout(stallTimer.current);
               stallTimer.current = setTimeout(() => {
                 stallTimer.current = null;
                 const vv = videoRef.current;
                 if (!vv || vv.paused || vv.readyState >= 3) return;
                 if (phaseRef.current === 'play') scheduleReconnect('Playback stalled');
-              }, STALL_WATCHDOG_MS);
+              }, transcodeRef.current ? STALL_WATCHDOG_TRANSCODE_MS : STALL_WATCHDOG_MS);
             }}
             onPlaying={() => {
               setBuffering(false);

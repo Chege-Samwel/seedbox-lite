@@ -2200,18 +2200,21 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       const parts = range.replace(/bytes=/, "").split("-");
       const start = parseInt(parts[0], 10);
       
-      // Calculate a reasonable end position - either requested or 8MB chunk
-      // This ensures we don't try to buffer the entire file at once
+      // Serve a generous window per response. The old 3MB cap made the
+      // browser open a new connection every ~10s of playback — brutal over
+      // ngrok (free-tier connection limits → ERR_SOCKET_NOT_CONNECTED) and
+      // wasteful locally. With the disk store keeping the whole file, 64MB
+      // per response (~20-30 min of typical media) gives smooth playback
+      // with a handful of connections per movie. Piece availability still
+      // backpressures naturally: the read stream waits at the swarm's
+      // download frontier, and the client reconnects at the playhead if a
+      // response dies mid-flight.
       let end = parts[1] ? parseInt(parts[1], 10) : null;
-      
-      // For seek operations, use a fixed chunk size to ensure reliable streaming
-      if (start > 0 && !end) {
-        const MAX_CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks for seeks (fast first-byte)
+      if (!end) {
+        const MAX_CHUNK_SIZE = 64 * 1024 * 1024; // 64MB per response
         end = Math.min(start + MAX_CHUNK_SIZE, file.length - 1);
-      } else if (!end) {
-        // Initial request - use a generous initial chunk
-        const INITIAL_CHUNK_SIZE = 3 * 1024 * 1024; // 3MB initial chunk
-        end = Math.min(start + INITIAL_CHUNK_SIZE, file.length - 1);
+      } else {
+        end = Math.min(end, file.length - 1);
       }
       
       const chunkSize = (end - start) + 1;
