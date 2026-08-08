@@ -542,7 +542,8 @@ module.exports = function mount(app) {
     return client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === infoHash.toLowerCase()) || null;
   }
 
-  const rehydrating = new Set();
+  const rehydrating = new Set(); // stores lowercased infoHashes
+  const normHash = (h) => String(h || '').toLowerCase();
 
   app.get('/api/me/profile', requireSession, (req, res) => {
     res.json({ user: req.user });
@@ -557,8 +558,9 @@ module.exports = function mount(app) {
       // lazily re-load remembered magnets in the background to learn file
       // names/sizes. No warmup — buffering starts on Play click, so many
       // pipeline items never download anything.
-      if (!torrent && load && client && !rehydrating.has(item.infoHash)) {
-        rehydrating.add(item.infoHash);
+      const itemHashNorm = normHash(item.infoHash);
+      if (!torrent && load && client && !rehydrating.has(itemHashNorm)) {
+        rehydrating.add(itemHashNorm);
         load(item.magnet)
           .then((t) => {
             if (!t) return;
@@ -582,9 +584,9 @@ module.exports = function mount(app) {
               console.warn(`⚠️ Rehydrate failed for ${item.infoHash}: ${err.message}`);
             }
           })
-          .finally(() => setTimeout(() => rehydrating.delete(item.infoHash), 5000));
+          .finally(() => setTimeout(() => rehydrating.delete(itemHashNorm), 5000));
       }
-      const loading = !torrent && (rehydrating.has(item.infoHash) || isLoading?.(item.infoHash));
+      const loading = !torrent && (rehydrating.has(itemHashNorm) || isLoading?.(item.infoHash));
       return { ...item, live: liveState(torrent, item.fileIndex ?? null, { loading }) };
     });
     res.json({ items });
@@ -604,20 +606,21 @@ module.exports = function mount(app) {
     const dnMatch = raw.match(/[?&]dn=([^&]+)/i);
     const dnTitle = dnMatch ? decodeURIComponent(dnMatch[1].replace(/\+/g, ' ')).trim() : null;
 
-    // Deduplicate per user
+    // Deduplicate per user (case-insensitive)
     const data = userStore.getUser(req.user.id);
-    const existing = data.library.find((i) => i.infoHash === infoHash);
+    const existing = data.library.find((i) => normHash(i.infoHash) === normHash(infoHash));
     if (existing) {
       // Pressing "add" again on an existing item is a nudge to (re)load it —
       // covers "quit & re-open" reliability without a separate wake route.
       const existingTorrent = findTorrent(infoHash);
-      if (!existingTorrent && load && !rehydrating.has(infoHash)) {
-        rehydrating.add(infoHash);
+      const existingNorm = normHash(infoHash);
+      if (!existingTorrent && load && !rehydrating.has(existingNorm)) {
+        rehydrating.add(existingNorm);
         load(existing.magnet)
           .catch(() => {})
-          .finally(() => setTimeout(() => rehydrating.delete(infoHash), 5000));
+          .finally(() => setTimeout(() => rehydrating.delete(existingNorm), 5000));
       }
-      const loading = !existingTorrent && (rehydrating.has(infoHash) || wt().isLoading?.(infoHash));
+      const loading = !existingTorrent && (rehydrating.has(existingNorm) || wt().isLoading?.(infoHash));
       return res.json({ ok: true, item: existing, duplicate: true, live: liveState(existingTorrent, existing.fileIndex ?? null, { loading }) });
     }
 

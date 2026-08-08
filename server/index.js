@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const WebTorrent = require('webtorrent');
 const multer = require('multer');
 const { RollingDiskChunkStore, stats: storeStats } = require('./lib/rollingStore');
@@ -103,15 +104,16 @@ app.use(cors({
 }));
 
 // Fallback headers middleware ensuring preflights always return 200 with matching origin
+// NOTE: When credentials:true, '*' is invalid — we must echo the requesting origin or omit.
+// The cors() middleware already handles this; this fallback only ensures OPTIONS 200
+// and preserves Vary header. When no Origin is present (same-origin), we don't set CORS.
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS,PATCH,HEAD');
   res.setHeader('Access-Control-Allow-Headers', ALLOWED_CORS_HEADERS.join(','));
   res.setHeader('Access-Control-Expose-Headers', 'Content-Range,Accept-Ranges,Content-Length,Retry-After,X-Transcode-Quality');
@@ -245,15 +247,35 @@ const nameToHash = {};         // Quick name-to-hash lookup
 // ═══════════════════════════════════════════════════════════════════
 const windowGovernor = require('./lib/windowGovernor');
 
+function normalizeInfoHash(h) {
+  return String(h || '').toLowerCase();
+}
+
 function destroyTorrentEverywhere(infoHash) {
   try {
-    const torrent = client.torrents.find((t) => t.infoHash === infoHash);
-    const name = torrentNames[infoHash];
-    delete torrents[infoHash];
-    delete torrentIds[infoHash];
-    delete torrentNames[infoHash];
-    delete hashToName[infoHash];
-    if (name) delete nameToHash[name];
+    const hash = normalizeInfoHash(infoHash);
+    const torrent = client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === hash);
+    // Support legacy uppercase keys as well during transition
+    const lookupKeys = [hash, String(infoHash || '').toUpperCase(), infoHash].filter(Boolean);
+    let name = null;
+    for (const k of lookupKeys) {
+      if (!name && torrentNames[k]) name = torrentNames[k];
+      delete torrents[k];
+      delete torrentIds[k];
+      delete torrentNames[k];
+      delete hashToName[k];
+    }
+    // Also ensure lowercase canonical deletion
+    const canonicalName = torrentNames[hash] || name;
+    delete torrents[hash];
+    delete torrentIds[hash];
+    delete torrentNames[hash];
+    delete hashToName[hash];
+    if (canonicalName) delete nameToHash[canonicalName];
+    // Also sweep nameToHash entries that map to this hash (case-insensitive)
+    for (const [n, h] of Object.entries(nameToHash)) {
+      if (String(h).toLowerCase() === hash) delete nameToHash[n];
+    }
     if (torrent) client.remove(torrent);
   } catch (err) {
     console.warn(`⚠️ Governor destroy failed for ${infoHash}: ${err.message}`);
@@ -661,45 +683,48 @@ const universalTorrentResolver = async (identifier) => {
       // Skip verbose logging on frequent API calls
       const debugLevel = process.env.DEBUG === 'true';
       if (debugLevel) console.log(`🔍 Universal resolver looking for: ${identifier}`);
-      
+
+      const normalized = String(identifier || '').toLowerCase();
+      const upper = String(identifier || '').toUpperCase();
+
       // Optimize with direct lookups for better performance - O(1) operations
-      // Strategy 1: Direct hash match in torrents - fastest path
-      if (torrents[identifier]) {
-        return torrents[identifier];
-      }
-      
+      // Strategy 1: Direct hash match in torrents - fastest path (case-insensitive)
+      if (torrents[identifier]) return torrents[identifier];
+      if (torrents[normalized]) return torrents[normalized];
+      if (torrents[upper]) return torrents[upper];
+
       // Strategy 2: Check lookup tables - also very fast
-      const hashByName = nameToHash[identifier];
-      if (hashByName && torrents[hashByName]) {
-        return torrents[hashByName];
+      const hashByName = nameToHash[identifier] || nameToHash[normalized];
+      if (hashByName) {
+        const h = String(hashByName).toLowerCase();
+        if (torrents[h] || torrents[hashByName]) return torrents[h] || torrents[hashByName];
       }
 
-      const originalTorrentId = torrentIds[identifier];
-      if (originalTorrentId && torrents[originalTorrentId]) {
-        return torrents[originalTorrentId];
+      const originalTorrentId = torrentIds[identifier] || torrentIds[normalized] || torrentIds[upper];
+      if (originalTorrentId) {
+        const k = String(originalTorrentId).toLowerCase();
+        if (torrents[k] || torrents[originalTorrentId]) return torrents[k] || torrents[originalTorrentId];
       }
-      
-      // Strategy 3: Check WebTorrent client
-      // Reduce search complexity by using a direct infoHash comparison when possible
-      if (identifier.length === 40) {
-        // For hash-like identifiers, do direct comparison
-        const existingTorrent = client.torrents.find(t => 
-          t.infoHash === identifier
+
+      // Strategy 3: Check WebTorrent client (always case-insensitive)
+      if (String(identifier).length === 40 || /^[a-f0-9]{40}$/i.test(String(identifier))) {
+        const existingTorrent = client.torrents.find(t =>
+          t.infoHash && t.infoHash.toLowerCase() === normalized
         );
-        
         if (existingTorrent) {
-          torrents[existingTorrent.infoHash] = existingTorrent;
+          const h = existingTorrent.infoHash.toLowerCase();
+          torrents[h] = existingTorrent;
           return existingTorrent;
         }
       } else {
         // For non-hash identifiers, check other properties
-        const existingTorrent = client.torrents.find(t => 
+        const existingTorrent = client.torrents.find(t =>
           t.name === identifier ||
           t.magnetURI === identifier
         );
-        
         if (existingTorrent) {
-          torrents[existingTorrent.infoHash] = existingTorrent;
+          const h = existingTorrent.infoHash.toLowerCase();
+          torrents[h] = existingTorrent;
           return existingTorrent;
         }
       }
@@ -827,12 +852,13 @@ const loadTorrentFromIdImpl = (torrentId) => {
       console.log(`✅ Torrent loaded: ${torrent.name} (${torrent.infoHash})`);
       console.log(`📊 Torrent stats: ${torrent.files.length} files, ${(torrent.length / 1024 / 1024).toFixed(1)} MB`);
       
-      // Store in ALL our tracking systems
-      torrents[torrent.infoHash] = torrent;
-      torrentIds[torrent.infoHash] = torrentId;
-      torrentNames[torrent.infoHash] = torrent.name;
-      hashToName[torrent.infoHash] = torrent.name;
-      nameToHash[torrent.name] = torrent.infoHash;
+      // Store in ALL our tracking systems — canonical key is lowercased infoHash
+      const canonicalHash = String(torrent.infoHash || '').toLowerCase();
+      torrents[canonicalHash] = torrent;
+      torrentIds[canonicalHash] = torrentId;
+      torrentNames[canonicalHash] = torrent.name;
+      hashToName[canonicalHash] = torrent.name;
+      nameToHash[torrent.name] = canonicalHash;
       
       torrent.addedAt = new Date().toISOString();
       torrent.addedTime = Date.now(); // numeric — governor idle math needs this
@@ -890,17 +916,18 @@ const loadTorrentFromIdImpl = (torrentId) => {
         console.log(`⏰ Timeout loading torrent after 60 seconds: ${torrentId}`);
         
         // Check if the torrent was actually added to the client
-        const clientTorrent = client.torrents.find(t => t.infoHash === torrent.infoHash);
+        const clientTorrent = client.torrents.find(t => t.infoHash && torrent.infoHash && t.infoHash.toLowerCase() === torrent.infoHash.toLowerCase());
         if (clientTorrent) {
           console.log(`🔍 Found torrent in client after timeout: ${clientTorrent.name || clientTorrent.infoHash}`);
 
-          // Store in tracking systems even if metadata isn't fully ready
-          torrents[clientTorrent.infoHash] = clientTorrent;
-          torrentIds[clientTorrent.infoHash] = torrentId;
-          torrentNames[clientTorrent.infoHash] = clientTorrent.name || 'Loading...';
-          hashToName[clientTorrent.infoHash] = clientTorrent.name || 'Loading...';
+          // Store in tracking systems even if metadata isn't fully ready (canonical lowercase key)
+          const ctHash = String(clientTorrent.infoHash || '').toLowerCase();
+          torrents[ctHash] = clientTorrent;
+          torrentIds[ctHash] = torrentId;
+          torrentNames[ctHash] = clientTorrent.name || 'Loading...';
+          hashToName[ctHash] = clientTorrent.name || 'Loading...';
           if (clientTorrent.name) {
-            nameToHash[clientTorrent.name] = clientTorrent.infoHash;
+            nameToHash[clientTorrent.name] = ctHash;
           }
 
           clientTorrent.addedAt = new Date().toISOString();
@@ -932,13 +959,14 @@ const loadTorrentFromIdImpl = (torrentId) => {
 const loadTorrentFromId = (torrentId) => {
   const hash = hashFromId(torrentId);
   if (hash) {
+    const norm = String(hash).toLowerCase();
     // Already fully loaded? Resolve instantly.
-    const existing = torrents[hash] || client.torrents.find((t) => t.infoHash === hash);
+    const existing = torrents[norm] || torrents[hash] || client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === norm);
     if (existing && existing.ready) {
-      governor.touchHash(hash);
+      governor.touchHash(norm);
       return Promise.resolve(existing);
     }
-    const inflight = loadingPromises.get(hash);
+    const inflight = loadingPromises.get(norm) || loadingPromises.get(hash);
     if (inflight) return inflight;
     const cap = tuning.maxActiveTorrents;
     // NB: an in-flight load shows up in BOTH client.torrents and
@@ -1120,9 +1148,13 @@ function setupSystemMonitoring() {
             try {
               console.log(`🔄 Attempting to restart stalled torrent: ${torrent.infoHash}`);
               torrent.destroy();
-              
-              // Remove from tracking
-              delete torrents[torrent.infoHash];
+
+              // Remove from tracking (canonical lowercase)
+              const stHash = String(torrent.infoHash || '').toLowerCase();
+              delete torrents[stHash];
+              delete torrents[stHash.toUpperCase()];
+              delete torrentIds[stHash];
+              delete torrentNames[stHash];
               
               // Delay re-adding to allow cleanup
               setTimeout(() => {
@@ -1225,7 +1257,7 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   console.log('📤 SIGINT received, shutting down gracefully...');
-  
+
   // Close all torrents cleanly
   try {
     console.log('🧲 Closing all torrents...');
@@ -1240,12 +1272,11 @@ process.on('SIGINT', () => {
   } catch (e) {
     console.log(`❌ Error closing client: ${e.message}`);
   }
-  
+
   process.exit(0);
 });
 
-// Configure multer
-const fs = require('fs');
+// Configure multer (fs already required at top)
 const uploadsDir = 'uploads/';
 
 // Ensure uploads directory exists
@@ -1284,7 +1315,7 @@ app.locals.wt = {
   canLoad: (hash) => {
     const h = String(hash || '').toLowerCase();
     if (h && (torrents[h] || loadingPromises.has(h))) return { ok: true };
-    if (h && client.torrents.find((t) => t.infoHash === h)) return { ok: true };
+    if (h && client.torrents.find((t) => t.infoHash && t.infoHash.toLowerCase() === h)) return { ok: true };
     const cap = tuning.maxActiveTorrents;
     // Union semantics: in-flight loads are already inside client.torrents
     const active = Math.max(client.torrents.length, loadingPromises.size);
@@ -1340,13 +1371,12 @@ app.post('/api/torrents', async (req, res) => {
             if (match) hash = match[1];
           }
           
-          // Try to find the existing torrent
-          const existingTorrent = Object.values(torrents).find(t => 
-            t.infoHash === hash || 
-            t.infoHash.toLowerCase() === hash.toLowerCase()
-          ) || client.torrents.find(t => 
-            t.infoHash === hash || 
-            t.infoHash.toLowerCase() === hash.toLowerCase()
+          // Try to find the existing torrent (case-insensitive)
+          const hashLower = String(hash || '').toLowerCase();
+          const existingTorrent = Object.values(torrents).find(t =>
+            t.infoHash && t.infoHash.toLowerCase() === hashLower
+          ) || client.torrents.find(t =>
+            t.infoHash && t.infoHash.toLowerCase() === hashLower
           );
           
           if (existingTorrent) {
@@ -1471,13 +1501,14 @@ app.post('/api/torrents/upload', upload.single('torrentFile'), async (req, res) 
         resolved = true;
         
         console.log(`✅ Torrent uploaded and loaded: ${loadedTorrent.name}`);
-        
-        // Store in tracking systems
-        torrents[loadedTorrent.infoHash] = loadedTorrent;
-        torrentIds[loadedTorrent.infoHash] = req.file.originalname;
-        torrentNames[loadedTorrent.infoHash] = loadedTorrent.name;
-        hashToName[loadedTorrent.infoHash] = loadedTorrent.name;
-        nameToHash[loadedTorrent.name] = loadedTorrent.infoHash;
+
+        // Store in tracking systems (canonical lowercase)
+        const upHash = String(loadedTorrent.infoHash || '').toLowerCase();
+        torrents[upHash] = loadedTorrent;
+        torrentIds[upHash] = req.file.originalname;
+        torrentNames[upHash] = loadedTorrent.name;
+        hashToName[upHash] = loadedTorrent.name;
+        nameToHash[loadedTorrent.name] = upHash;
         
         loadedTorrent.addedAt = new Date().toISOString();
         loadedTorrent.uploadLimit = 2048; // Moderate upload for peer reciprocity
@@ -2281,21 +2312,31 @@ app.delete('/api/torrents/:identifier', async (req, res) => {
     }
     
     const torrentName = torrent.name;
-    const infoHash = torrent.infoHash;
+    const infoHash = String(torrent.infoHash || '').toLowerCase();
     const freedSpace = torrent.downloaded || 0;
-    
+
     client.remove(torrent, { destroyStore: true }, (err) => {
       if (err) {
         console.log(`⚠️ Error removing torrent: ${err.message}`);
         return res.status(500).json({ error: 'Failed to remove torrent: ' + err.message });
       }
-      
-      // Clean ALL tracking systems
-      delete torrents[infoHash];
-      delete torrentIds[infoHash];
-      delete torrentNames[infoHash];
-      delete hashToName[infoHash];
+
+      // Clean ALL tracking systems (case-insensitive cleanup)
+      const upper = infoHash.toUpperCase();
+      for (const key of [infoHash, upper, torrent.infoHash]) {
+        if (!key) continue;
+        delete torrents[key];
+        delete torrentIds[key];
+        delete torrentNames[key];
+        delete hashToName[key];
+      }
+      // Also sweep any legacy uppercase entry
+      delete torrents[infoHash.toLowerCase()];
       delete nameToHash[torrentName];
+      // Sweep nameToHash that maps to this hash
+      for (const [n, h] of Object.entries(nameToHash)) {
+        if (String(h).toLowerCase() === infoHash) delete nameToHash[n];
+      }
       
       console.log(`✅ Torrent removed: ${torrentName}`);
       
@@ -2405,26 +2446,39 @@ app.get('/api/cache/stats', async (req, res) => {
   }
 });
 
-// Disk usage
-app.get('/api/system/disk', (req, res) => {
+// Disk usage — uses statfs when available (no shell exec, no injection surface),
+// falls back to execFile('df', ...) which does not invoke a shell.
+app.get('/api/system/disk', async (req, res) => {
   try {
-    const { exec } = require('child_process');
-    
-    exec('df -k .', (error, stdout, stderr) => {
+    try {
+      if (fs.statfsSync) {
+        const s = fs.statfsSync('.');
+        const total = (s.bsize || 4096) * (s.blocks || 0);
+        const available = (s.bsize || 4096) * (s.bavail || s.bfree || 0);
+        const used = Math.max(0, total - available);
+        const percentage = total > 0 ? Math.round((used / total) * 100) : 0;
+        const diskInfo = { total, used, available, percentage };
+        console.log('Disk usage:', diskInfo);
+        return res.json(diskInfo);
+      }
+    } catch (e) {
+      console.warn('statfs failed, falling back to df: ' + e.message);
+    }
+    const { execFile } = require('child_process');
+    execFile('df', ['-k', '.'], (error, stdout) => {
       if (error) {
         console.error('Error getting disk usage:', error);
         return res.status(500).json({ error: 'Failed to get disk usage' });
       }
-      
       const lines = stdout.trim().split('\n');
-      const data = lines[1].split(/\s+/);
-      const total = parseInt(data[1]) * 1024;
-      const used = parseInt(data[2]) * 1024;
-      const available = parseInt(data[3]) * 1024;
-      const percentage = Math.round((used / total) * 100);
-      
+      if (lines.length < 2) return res.json({ total: 0, used: 0, available: 0, percentage: 0 });
+      const data = lines[lines.length - 1].trim().split(/\s+/);
+      const total = parseInt(data[1], 10) * 1024;
+      const used = parseInt(data[2], 10) * 1024;
+      const available = parseInt(data[3], 10) * 1024;
+      const percentage = total > 0 ? Math.round((used / total) * 100) : 0;
       const diskInfo = { total, used, available, percentage };
-      console.log('📊 Disk usage:', diskInfo);
+      console.log('Disk usage:', diskInfo);
       res.json(diskInfo);
     });
   } catch (error) {

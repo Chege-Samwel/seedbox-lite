@@ -161,7 +161,7 @@ function dateValue(value, fallback = 0) {
 function hashFrom(magnet, infoHash) {
   const direct = String(infoHash || '').match(/[a-f\d]{32,40}/i);
   const fromMagnet = String(magnet || '').match(/xt=urn:btih:([a-z\d]{32,40})/i);
-  return (direct?.[0] || fromMagnet?.[1] || '').toUpperCase();
+  return (direct?.[0] || fromMagnet?.[1] || '').toLowerCase();
 }
 
 function magnetName(magnet) {
@@ -206,7 +206,7 @@ function artworkFallback(item) {
 function normalize(raw, feed, index, fixed = false) {
   const title = stripDecoratedText(raw.title || raw.name || 'Untitled');
   const magnet = xmlDecode(raw.magnet || raw.link || '');
-  const hash = hashFrom(magnet, raw.infoHash) || crypto.createHash('sha1').update(magnet || `${feed.key}:${index}:${title}`).digest('hex').slice(0, 40).toUpperCase();
+  const hash = hashFrom(magnet, raw.infoHash) || crypto.createHash('sha1').update(magnet || `${feed.key}:${index}:${title}`).digest('hex').slice(0, 40).toLowerCase();
   const publishedAt = raw.publishedAt || raw.pubDate || '';
   const item = {
     id: hash,
@@ -347,8 +347,14 @@ async function home({ force = false } = {}) {
     let items = [...(byFeed.get(feed.key) || [])];
     if (feed.kind === 'new') items.sort((a, b) => b.publishedMs - a.publishedMs);
     // A feed can repeat a magnet. Keep the first occurrence in that row.
+    // Case-insensitive dedup: hashes are normalized lowercase but guard anyway.
     const seen = new Set();
-    items = items.filter((item) => !seen.has(item.infoHash) && seen.add(item.infoHash));
+    items = items.filter((item) => {
+      const key = String(item.infoHash || '').toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     return { key: feed.key, title: feed.label, hint: feed.kind === 'new' ? 'Newest RSS entries' : 'RSS top 100', category: feed.category, kind: feed.kind, items };
   });
   await enrichHome(rows);
@@ -360,13 +366,13 @@ async function home({ force = false } = {}) {
     rows,
     offline: rows.every((row) => row.items.every((item) => item.fixed)),
   };
-  homeMemo = { at: Date.now(), data, items: new Map(rows.flatMap((r) => r.items.map((item) => [item.infoHash, item]))) };
+  homeMemo = { at: Date.now(), data, items: new Map(rows.flatMap((r) => r.items.map((item) => [String(item.infoHash || '').toLowerCase(), item]))) };
   return data;
 }
 
 async function getItem(infoHash) {
-  const catalog = await home();
-  const found = homeMemo.items.get(String(infoHash || '').toUpperCase());
+  await home();
+  const found = homeMemo.items.get(String(infoHash || '').toLowerCase());
   if (!found) return null;
   // Return a fresh object so route consumers cannot mutate the memoized home.
   return { ...found, episodeInfo: { ...found.episodeInfo, tokens: [...(found.episodeInfo.tokens || [])] } };
