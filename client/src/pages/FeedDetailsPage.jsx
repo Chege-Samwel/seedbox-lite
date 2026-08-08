@@ -36,7 +36,9 @@ export default function FeedDetailsPage() {
     } catch (err) {
       // Auto-load path: server will now auto-load the magnet from its RSS cache
       // and try to fetch metadata from peers. Retry a couple times before giving up.
-      if (err.status === 404) {
+      // (503 = the server's setup timeout while the swarm was still producing
+      // metadata — retryable, same as a cold-start 404.)
+      if (err.status === 404 || err.status === 503) {
         toast('Fetching file list from peers — will auto-retry (needs metadata)…');
         // Trigger background load via library add? No, just poll details.
         for (let i = 0; i < 3; i++) {

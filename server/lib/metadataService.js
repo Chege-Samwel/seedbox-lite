@@ -4,10 +4,14 @@
  * episode structures.
  *
  * Provider chain (first hit wins):
- *   1. TMDB  — if TMDB_API_KEY is set (richest data: backdrops, seasons)
+ *   1. TMDB  — if TMDB_ACCESS_TOKEN / TMDB_API_KEY is set (richest data:
+ *              backdrops, seasons). The access token (Bearer) is preferred:
+ *              v3 api_key query auth 401s for accounts that only hold the
+ *              read-access token.
  *   2. TVMaze — free, no key needed, excellent TV season/episode data
  *   3. iTunes — free, no key needed, decent movie artwork fallback
- *   4. OMDb  — legacy key from this repo as a last-resort movie poster
+ *   4. OMDb  — optional last-resort movie poster (needs a real OMDB_API_KEY;
+ *              dead/absent keys are skipped silently instead of 401-spamming)
  *
  * All responses are cached to disk; failures degrade gracefully (found:false).
  */
@@ -15,20 +19,23 @@ const db = require('./jsondb');
 
 const CACHE_KEY = 'metadata_cache';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const TMDB_TOKEN = process.env.TMDB_ACCESS_TOKEN || '';
 const TMDB_KEY = process.env.TMDB_API_KEY || '';
-const OMDB_KEY = process.env.OMDB_API_KEY || '8265bd1c';
+const TMDB_ENABLED = !!(TMDB_TOKEN || TMDB_KEY);
+const OMDB_KEY = process.env.OMDB_API_KEY || '';
 const TMDB_IMG = 'https://image.tmdb.org/t/p';
+let omdb401Logged = false;
 
 function cache() { return db.read(CACHE_KEY, { entries: {} }); }
 
-async function cachedJson(url, timeoutMs = 8000) {
+async function cachedJson(url, timeoutMs = 8000, extraHeaders = {}) {
   const c = cache();
   const hit = c.entries[url];
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'SeedBoxLite/2.0' } });
+    const res = await fetch(url, { signal: controller.signal, headers: { 'User-Agent': 'SeedBoxLite/2.0', ...extraHeaders } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     c.entries[url] = { at: Date.now(), data };
@@ -40,6 +47,24 @@ async function cachedJson(url, timeoutMs = 8000) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Build a TMDB v3 API URL. Auth stays OUT of the URL when a Bearer token is
+ * configured (the token is sent as an Authorization header) — the cache key
+ * is the URL, so token auth also avoids stale api_key URLs being cached.
+ */
+function tmdbUrl(pathWithQuery) {
+  const query = TMDB_TOKEN ? '' : `api_key=${TMDB_KEY}`;
+  if (!query) return `https://api.themoviedb.org/3${pathWithQuery}`;
+  const sep = pathWithQuery.includes('?') ? '&' : '?';
+  return `https://api.themoviedb.org/3${pathWithQuery}${sep}${query}`;
+}
+
+/** TMDB JSON GET with the best available auth (Bearer token > api_key). */
+function tmdbJson(pathWithQuery, timeoutMs = 8000) {
+  const headers = TMDB_TOKEN ? { Authorization: `Bearer ${TMDB_TOKEN}` } : {};
+  return cachedJson(tmdbUrl(pathWithQuery), timeoutMs, headers);
 }
 
 function stripHtml(s) {
@@ -157,11 +182,11 @@ async function lookup(queryInput, { type = 'any', year = null } = {}) {
   const attempts = [];
 
   // 1) TMDB
-  if (TMDB_KEY) {
+  if (TMDB_ENABLED) {
     attempts.push((async () => {
       const tmdbType = type === 'movie' ? 'movie' : type === 'show' ? 'tv' : 'multi';
-      const data = await cachedJson(
-        `https://api.themoviedb.org/3/search/${tmdbType}?api_key=${TMDB_KEY}&language=en-US&page=1&include_adult=false&query=${encodeURIComponent(query)}${year ? `&year=${year}&first_air_date_year=${year}` : ''}`
+      const data = await tmdbJson(
+        `/search/${tmdbType}?language=en-US&page=1&include_adult=false&query=${encodeURIComponent(query)}${year ? `&year=${year}&first_air_date_year=${year}` : ''}`
       );
       const list = (data.results || []).filter((r) => r.media_type !== 'person');
       if (!list.length) return null;
@@ -191,14 +216,24 @@ async function lookup(queryInput, { type = 'any', year = null } = {}) {
     return { found: true, best: normalizeItunes(data.results[0]), results: data.results.map(normalizeItunes) };
   })().catch((err) => { console.warn(`⚠️ iTunes lookup failed: ${err.message}`); return null; }));
 
-  // 4) OMDb
-  attempts.push((async () => {
-    const data = await cachedJson(
-      `https://www.omdbapi.com/?apikey=${OMDB_KEY}&t=${encodeURIComponent(query)}${year ? `&y=${year}` : ''}&type=${type === 'show' ? 'series' : 'movie'}&plot=short`
-    );
-    if (!data || data.Response !== 'True') return null;
-    return { found: true, best: normalizeOmdb(data), results: [normalizeOmdb(data)] };
-  })().catch((err) => { console.warn(`⚠️ OMDb lookup failed: ${err.message}`); return null; }));
+  // 4) OMDb — optional (needs a real key). A missing/dead key 401s every
+  // lookup, so when the key is absent we skip OMDb entirely, and a 401 is
+  // logged once per process instead of once per request.
+  if (OMDB_KEY) {
+    attempts.push((async () => {
+      const data = await cachedJson(
+        `https://www.omdbapi.com/?apikey=${OMDB_KEY}&t=${encodeURIComponent(query)}${year ? `&y=${year}` : ''}&type=${type === 'show' ? 'series' : 'movie'}&plot=short`
+      );
+      if (!data || data.Response !== 'True') return null;
+      return { found: true, best: normalizeOmdb(data), results: [normalizeOmdb(data)] };
+    })().catch((err) => {
+      if (!/HTTP 401/.test(err.message) || !omdb401Logged) {
+        console.warn(`⚠️ OMDb lookup failed: ${err.message}`);
+        if (/HTTP 401/.test(err.message)) omdb401Logged = true;
+      }
+      return null;
+    }));
+  }
 
   if (!attempts.length) return { found: false };
 
@@ -247,7 +282,7 @@ async function tvmazeShowStructure(showId, seasonNumber) {
 }
 
 async function tmdbShowStructure(tmdbId, seasonNumber) {
-  const show = await cachedJson(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}&language=en-US`);
+  const show = await tmdbJson(`/tv/${tmdbId}?language=en-US`);
   const seasons = (show.seasons || [])
     .filter((s) => s.season_number > 0)
     .map((s) => ({
@@ -259,7 +294,7 @@ async function tmdbShowStructure(tmdbId, seasonNumber) {
     }));
   let episodes = [];
   if (seasonNumber != null) {
-    const data = await cachedJson(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${TMDB_KEY}&language=en-US`);
+    const data = await tmdbJson(`/tv/${tmdbId}/season/${seasonNumber}?language=en-US`);
     episodes = (data.episodes || []).map((e) => ({
       season: e.season_number,
       number: e.episode_number,
@@ -295,10 +330,10 @@ async function getShow(nameOrId, seasonNumber = null) {
       return { found: true, show: normalizeTvmazeShow(showData), ...structure };
     }
     // Direct TMDB id
-    if (TMDB_KEY && /^tmdb-tv-(\d+)$/.test(nameOrId)) {
+    if (TMDB_ENABLED && /^tmdb-tv-(\d+)$/.test(nameOrId)) {
       const id = nameOrId.split('-')[2];
       const structure = await tmdbShowStructure(id, seasonNumber);
-      const showData = await cachedJson(`https://api.themoviedb.org/3/tv/${id}?api_key=${TMDB_KEY}&language=en-US`);
+      const showData = await tmdbJson(`/tv/${id}?language=en-US`);
       return { found: true, show: normalizeTmdbTv(showData), ...structure };
     }
     // Free-text search → providers
@@ -309,7 +344,7 @@ async function getShow(nameOrId, seasonNumber = null) {
       const structure = await tvmazeShowStructure(show.id.split('-')[1], seasonNumber);
       return { found: true, show, ...structure };
     }
-    if (show.source === 'tmdb' && TMDB_KEY) {
+    if (show.source === 'tmdb' && TMDB_ENABLED) {
       const structure = await tmdbShowStructure(show.id.split('-')[2], seasonNumber);
       return { found: true, show, ...structure };
     }

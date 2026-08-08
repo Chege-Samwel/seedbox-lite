@@ -248,7 +248,9 @@ export const getTrackedShow = (showKey) => apiFetch(`/api/me/shows/${encodeURICo
 export const setEpisodeWatched = (payload) => apiFetch('/api/me/shows/watched', { method: 'POST', body: payload });
 
 // ---------- Torrent streams (legacy engine) ----------
-export const getTorrentDetails = (infoHash) => apiFetch(`/api/torrents/${infoHash}`, { timeoutMs: 10000 });
+// Details may auto-load a cold torrent + wait up to ~12s for swarm metadata,
+// so the fetch budget must exceed the server's 20s setup timeout.
+export const getTorrentDetails = (infoHash) => apiFetch(`/api/torrents/${infoHash}`, { timeoutMs: 25000, retries: 1 });
 
 // Warmup: starts on Play click, re-centers on "go to time". The server loads
 // the magnet if the torrent is missing (quit/restart/reap) and buffers ~1

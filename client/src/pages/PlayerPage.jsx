@@ -111,7 +111,9 @@ export default function PlayerPage() {
   // Quality / transcode (torrent sources only)
   const [tcMenu, setTcMenu] = useState(false);
   const [tcStatus, setTcStatus] = useState(null); // { available, presets, defaultQuality }
-  const [qualityPref, setQualityPref] = useState(() => localStorage.getItem('sb_quality') || 'auto');
+  // Default quality = the ORIGINAL file ('source'), untouched by any
+  // transcode — "Auto" only kicks in when the container isn't playable.
+  const [qualityPref, setQualityPref] = useState(() => localStorage.getItem('sb_quality') || 'source');
   const [transcodeQ, setTranscodeQ] = useState(null); // active rendition e.g. '720p' (null = direct)
   const transcodeRef = useRef(null); // mirrors transcodeQ for async paths
   const qualityRef = useRef(qualityPref);
@@ -659,8 +661,13 @@ export default function PlayerPage() {
     performSeek(frac * v.duration);
   }, [performSeek]);
 
+  const hoveringRef = useRef(false); // is the pointer over the player shell?
+
   // Auto-hide UI while playing — mouse MOVEMENT (or any pointer activity)
-  // always brings navigation back; no click needed.
+  // always brings navigation back; no click needed. While the pointer is
+  // HOVERING the player (even motionless) the UI stays up, so hover effects
+  // (controls, scrubber, cursor) behave; it only fades once the pointer
+  // leaves or after idle while away.
   const pokeUi = useCallback(() => {
     const now = performance.now();
     const wasHidden = !uiVisibleRef.current;
@@ -671,6 +678,7 @@ export default function PlayerPage() {
     }
     if (hideTimer.current) clearTimeout(hideTimer.current);
     hideTimer.current = setTimeout(() => {
+      if (hoveringRef.current) return; // pointer still over the player
       uiVisibleRef.current = false;
       if (videoRef.current && !videoRef.current.paused && !dragging.current) setUiVisible(false);
     }, 2800);
@@ -832,6 +840,22 @@ export default function PlayerPage() {
       onClick={onTapStage}
       onPointerMove={onShellPointerMove}
       onMouseMove={onShellPointerMove}
+      onPointerEnter={(e) => {
+        if (e.pointerType && e.pointerType !== 'mouse' && e.pointerType !== 'pen') return;
+        hoveringRef.current = true;
+        pokeUi();
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType && e.pointerType !== 'mouse' && e.pointerType !== 'pen') return;
+        hoveringRef.current = false;
+        // Fade the controls shortly after the pointer leaves the player
+        // (while playing); pokeUi's own timer would wait the full idle span.
+        if (hideTimer.current) clearTimeout(hideTimer.current);
+        hideTimer.current = setTimeout(() => {
+          uiVisibleRef.current = false;
+          if (videoRef.current && !videoRef.current.paused && !dragging.current) setUiVisible(false);
+        }, 600);
+      }}
     >
       {/* Top bar */}
       <div className={`player-topbar ${uiVisible ? '' : 'hidden'}`} onClick={(e) => e.stopPropagation()}>
@@ -1195,7 +1219,7 @@ export default function PlayerPage() {
                   title="Quality"
                 >
                   <Settings />
-                  <span className="q-chip">{transcodeQ || (qualityPref === 'source' ? 'HD' : 'Auto')}</span>
+                  <span className="q-chip">{transcodeQ || (qualityPref === 'source' ? 'Source' : 'Auto')}</span>
                 </button>
               )}
               <button className={`icon-btn ctrl ${subMenu ? 'on' : ''}`} onClick={() => { setSubMenu((s) => !s); setTcMenu(false); pokeUi(); }} title="Captions">
