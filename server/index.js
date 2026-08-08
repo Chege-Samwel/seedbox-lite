@@ -2059,6 +2059,32 @@ app.get('/api/torrents/:identifier/imdb', async (req, res) => {
 });
 
 // UNIVERSAL STREAMING - Enhanced for production environments
+/**
+ * CORS/CORP headers for media responses. <video>/<audio> element fetches are
+ * no-cors requests — browsers send NO Origin header. The old code wrote
+ * 'Access-Control-Allow-Credentials': undefined when Origin was missing,
+ * which makes res.writeHead() throw ERR_HTTP_INVALID_HEADER_VALUE and kills
+ * EVERY torrent stream request (the "endless spinner" — archives played
+ * because they never go through this path). When Origin is absent we omit
+ * the CORS pair entirely (CORP/COEP still permit cross-origin embedding);
+ * when present we echo it with credentials.
+ */
+function mediaCorsHeaders(req, extraExpose = []) {
+  const origin = req.headers.origin;
+  const h = {
+    'Access-Control-Expose-Headers': ['Content-Range', 'Accept-Ranges', 'Content-Length', ...extraExpose].join(', '),
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cross-Origin-Embedder-Policy': 'credentialless',
+    'Vary': 'Origin',
+  };
+  if (origin) {
+    h['Access-Control-Allow-Origin'] = origin;
+    h['Access-Control-Allow-Credentials'] = 'true';
+    h['Access-Control-Allow-Headers'] = 'Range, Content-Type, Authorization, ngrok-skip-browser-warning';
+  }
+  return h;
+}
+
 app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
   const { identifier, fileIdx } = req.params;
   const debugLevel = process.env.DEBUG === 'true';
@@ -2084,6 +2110,17 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
     }
   }, tuning.streamSetupTimeoutMs);
   
+  // Stream slot bookkeeping lives OUTSIDE the try: a const declared inside
+  // the try body is invisible to the catch block (the `typeof` guard was
+  // therefore ALWAYS false), so every request that crashed below leaked its
+  // slot until the shed counter hit MAX_STREAM_RESPONSES and blocked ALL
+  // streams permanently ("Stream shed: 12/12 active").
+  let streamSlotHeld = false;
+  const releaseStreamSlot = () => {
+    if (streamSlotHeld) { streamSlotHeld = false; activeStreamResponses--; }
+  };
+  let govStreamId = null;
+
   try {
     const torrent = await universalTorrentResolver(identifier);
     if (res.headersSent) return; // setup timeout already answered 503
@@ -2108,16 +2145,12 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       return res.status(503).json({ error: 'Server streaming at capacity — retry shortly', retryable: true, retryAfterSecs: 2 });
     }
     activeStreamResponses++;
-    let streamSlotHeld = true;
-    const releaseStreamSlot = () => {
-      if (streamSlotHeld) { streamSlotHeld = false; activeStreamResponses--; }
-    };
-
+    streamSlotHeld = true;
     // Ensure torrent is active and file is selected with high priority
     torrent.resume();
     // GOVERNOR: register this stream and select ONLY a bounded window around
     // the requested range — never file.select() the whole file into RAM.
-    const govStreamId = governor.registerStream(torrent.infoHash, parseInt(fileIdx, 10), file.length);
+    govStreamId = governor.registerStream(torrent.infoHash, parseInt(fileIdx, 10), file.length);
     const reqRangeHeader = req.headers.range || '';
     const reqStart = reqRangeHeader ? parseInt(reqRangeHeader.replace(/bytes=/, '').split('-')[0], 10) : 0;
     governor.notePosition(govStreamId, isNaN(reqStart) ? 0 : reqStart);
@@ -2219,7 +2252,6 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         }
       }
       
-      const streamOrigin = req.headers.origin || '*';
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${file.length}`,
         'Accept-Ranges': 'bytes',
@@ -2228,14 +2260,8 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-        'Access-Control-Allow-Origin': streamOrigin,
-        'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, ngrok-skip-browser-warning',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-Transcode-Quality',
-        'Access-Control-Allow-Credentials': streamOrigin !== '*' ? 'true' : undefined,
-        'Cross-Origin-Resource-Policy': 'cross-origin',
-        'Cross-Origin-Embedder-Policy': 'credentialless',
-        'Vary': 'Origin',
-        'Connection': 'keep-alive'
+        'Connection': 'keep-alive',
+        ...mediaCorsHeaders(req, ['X-Transcode-Quality']),
       });
       
       // Create the stream with robust error handling
@@ -2252,9 +2278,13 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
           } else {
             console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
           }
+          // Never leave the response (or the stream slot) hanging on error.
           if (!res.headersSent && !res.writableEnded) {
             res.status(500).end();
+          } else if (!res.writableEnded) {
+            res.end();
           }
+          markStreamEnded();
         });
         
         stream.on('end', markStreamEnded);
@@ -2264,15 +2294,16 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         stream.pipe(res);
       } catch (streamError) {
         console.error(`❌ [${streamRequestId}] Failed to create stream:`, streamError.message);
+        clearTimeout(streamTimeout);
         if (!res.headersSent && !res.writableEnded) {
-          clearTimeout(streamTimeout);
           res.status(500).json({ error: 'Streaming error: ' + streamError.message });
         }
+        releaseStreamSlot();
+        if (govStreamId != null) { try { governor.endStream(govStreamId); } catch (_) {} }
       }
       
     } else {
       // Handle full file request (less common)
-      const fullOrigin = req.headers.origin || '*';
       res.writeHead(200, {
         'Content-Length': file.length,
         'Content-Type': contentType,
@@ -2280,13 +2311,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-        'Access-Control-Allow-Origin': fullOrigin,
-        'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, ngrok-skip-browser-warning',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-Transcode-Quality',
-        'Access-Control-Allow-Credentials': fullOrigin !== '*' ? 'true' : undefined,
-        'Cross-Origin-Resource-Policy': 'cross-origin',
-        'Cross-Origin-Embedder-Policy': 'credentialless',
-        'Vary': 'Origin'
+        ...mediaCorsHeaders(req, ['X-Transcode-Quality']),
       });
       
       try {
@@ -2295,7 +2320,12 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
           if (!/premature|aborted|ECONNRESET|EPIPE|cancel/i.test(err.message || '')) {
             console.error(`❌ [${streamRequestId}] Stream error:`, err.message);
           }
-          if (!res.writableEnded) res.end();
+          if (!res.headersSent && !res.writableEnded) {
+            res.status(500).end();
+          } else if (!res.writableEnded) {
+            res.end();
+          }
+          markStreamEnded();
         });
         
         stream.on('end', markStreamEnded);
@@ -2307,12 +2337,15 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         if (!res.headersSent) {
           res.status(500).json({ error: 'Streaming error: ' + streamError.message });
         }
+        releaseStreamSlot();
+        if (govStreamId != null) { try { governor.endStream(govStreamId); } catch (_) {} }
       }
     }
     
   } catch (error) {
     clearTimeout(streamTimeout);
-    if (typeof releaseStreamSlot === 'function') releaseStreamSlot();
+    releaseStreamSlot();
+    if (govStreamId != null) { try { governor.endStream(govStreamId); } catch (_) {} }
     console.error(`❌ Universal streaming failed:`, error.message);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Streaming failed: ' + error.message });

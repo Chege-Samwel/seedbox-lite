@@ -25,6 +25,7 @@ const TMDB_ENABLED = !!(TMDB_TOKEN || TMDB_KEY);
 const OMDB_KEY = process.env.OMDB_API_KEY || '';
 const TMDB_IMG = 'https://image.tmdb.org/t/p';
 let omdb401Logged = false;
+let tmdb401Logged = false;
 
 function cache() { return db.read(CACHE_KEY, { entries: {} }); }
 
@@ -192,7 +193,13 @@ async function lookup(queryInput, { type = 'any', year = null } = {}) {
       if (!list.length) return null;
       const best = list[0];
       return { found: true, best: best.media_type === 'tv' || best.first_air_date ? normalizeTmdbTv(best) : normalizeTmdbMovie(best), results: list.slice(0, 10).map((r) => (r.media_type === 'tv' || r.first_air_date ? normalizeTmdbTv(r) : normalizeTmdbMovie(r))) };
-    })().catch((err) => { console.warn(`⚠️ TMDB lookup failed: ${err.message}`); return null; }));
+    })().catch((err) => {
+      if (!/HTTP 401/.test(err.message) || !tmdb401Logged) {
+        console.warn(`⚠️ TMDB lookup failed: ${err.message}`);
+        if (/HTTP 401/.test(err.message)) tmdb401Logged = true;
+      }
+      return null;
+    }));
   }
 
   // 2) TVMaze (TV)
