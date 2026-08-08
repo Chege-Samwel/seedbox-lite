@@ -28,11 +28,13 @@ const NGROK_URL = (process.env.NGROK_URL || '').trim();
 const t0 = Date.now();
 const secs = () => ((Date.now() - t0) / 1000).toFixed(1) + 's';
 
-// Start the server — light profile by default (explicit env vars win).
+// Start the server — balanced profile by default (explicit env vars win).
+// Previous lite defaults disabled transcode, which broke MKV playback on Netlify (NotSupportedError).
+// Now: transcode enabled when ffmpeg present, original quality default (client uses 'source').
 console.log(`[+${secs()}] 🌱 Starting Heiken server…`);
 const env = { ...process.env, NODE_ENV: process.env.NODE_ENV || 'production' };
-if (env.LITE_MODE === undefined) env.LITE_MODE = 'true';
-if (env.DISABLE_TRANSCODE === undefined) env.DISABLE_TRANSCODE = 'true';
+if (env.LITE_MODE === undefined) env.LITE_MODE = 'false';
+if (env.DISABLE_TRANSCODE === undefined) env.DISABLE_TRANSCODE = 'false';
 if (env.MAX_ACTIVE_TORRENTS === undefined) env.MAX_ACTIVE_TORRENTS = '5';
 console.log(`[+${secs()}] 🍃 Profile: LITE_MODE=${env.LITE_MODE} DISABLE_TRANSCODE=${env.DISABLE_TRANSCODE} MAX_ACTIVE_TORRENTS=${env.MAX_ACTIVE_TORRENTS}`);
 const server = spawn('node', ['index.js'], { cwd: path.join(root, 'server'), env, stdio: 'inherit' });

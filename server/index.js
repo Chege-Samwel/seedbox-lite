@@ -193,6 +193,23 @@ console.log(`🌐 Running in ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'} mode
 if (isCloud) console.log(`☁️ Cloud/DigitalOcean deployment detected`);
 
 // Central resource budget (LITE_MODE presets + explicit env overrides).
+
+// ── TMDB v4 Bearer support (user provided token) ─────────────────────────
+const TMDB_DEFAULT_V4 = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI0YThmNjI0NDdlNGI5MWE4YmExZmIzOWFlMjMzNGI2NyIsIm5iZiI6MTc4NjE5MTY2MS42OTIsInN1YiI6IjZhNzcxZjJkNDkyMDVmYjhkZThmYzBhZiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.6LophtD5_uwhJdXo2bbkcI_t_jXTbvUEJkx0binnsNo';
+const TMDB_RAW_TOKEN = process.env.TMDB_API_KEY || process.env.TMDB_READ_TOKEN || TMDB_DEFAULT_V4;
+function isTmdbJwt(s){ return typeof s==='string' && s.startsWith('eyJ') && s.split('.').length===3; }
+const TMDB_IS_V4 = isTmdbJwt(TMDB_RAW_TOKEN);
+function tmdbHeaders(){ return TMDB_IS_V4 ? { Accept:'application/json', Authorization:`Bearer ${TMDB_RAW_TOKEN}` } : { Accept:'application/json' }; }
+function tmdbUrl(pathQ){ const base=`https://api.themoviedb.org${pathQ}`; if(TMDB_IS_V4) return base; const sep=base.includes('?')?'&':'?'; return `${base}${sep}api_key=${TMDB_RAW_TOKEN}`; }
+async function tmdbFetchJson(pathQ, timeoutMs=8000){
+  const ctrl=new AbortController(); const t=setTimeout(()=>ctrl.abort(), timeoutMs);
+  try{
+    const res=await fetch(tmdbUrl(pathQ), { signal:ctrl.signal, headers:{ 'User-Agent':'SeedBoxLite/1.0', ...tmdbHeaders() }});
+    if(!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+    return await res.json();
+  } finally { clearTimeout(t); }
+}
+
 const tuning = require('./lib/tuning');
 if (tuning.lite) {
   console.log('🍃 LITE MODE active — reduced memory/CPU budget for small hosts');
@@ -471,15 +488,8 @@ async function fetchIMDBData(torrentName) { const debugLevel = process.env.DEBUG
                     // Try to enhance OMDb data with TMDB backdrop for better visuals
                     try {
                         if (isLikelySeries && movieData.Type === 'series') {
-                            const tmdbTvUrl = `https://api.themoviedb.org/3/search/tv?api_key=3fd2be6f0c70a2a598f084ddfb75487d&query=${encodeURIComponent(movieData.Title)}`;
-                            const tmdbResponse = await fetch(tmdbTvUrl, {
-                                method: 'GET',
-                                headers: { 'Accept': 'application/json', 'User-Agent': 'SeedboxLite/1.0' },
-                                signal: AbortSignal.timeout(10000)
-                            });
-                            
-                            if (tmdbResponse.ok) {
-                                const tmdbData = await tmdbResponse.json();
+                            const tmdbData = await tmdbFetchJson(`/3/search/tv?query=${encodeURIComponent(movieData.Title)}`, 10000).catch(()=>null);
+                            if (tmdbData) {
                                 if (tmdbData.results && tmdbData.results.length > 0) {
                                     const show = tmdbData.results[0];
                                     if (show.backdrop_path) {
@@ -489,15 +499,8 @@ async function fetchIMDBData(torrentName) { const debugLevel = process.env.DEBUG
                                 }
                             }
                         } else {
-                            const tmdbMovieUrl = `https://api.themoviedb.org/3/search/movie?api_key=3fd2be6f0c70a2a598f084ddfb75487d&query=${encodeURIComponent(movieData.Title)}`;
-                            const tmdbResponse = await fetch(tmdbMovieUrl, {
-                                method: 'GET',
-                                headers: { 'Accept': 'application/json', 'User-Agent': 'SeedboxLite/1.0' },
-                                signal: AbortSignal.timeout(10000)
-                            });
-                            
-                            if (tmdbResponse.ok) {
-                                const tmdbData = await tmdbResponse.json();
+                            const tmdbData = await tmdbFetchJson(`/3/search/movie?query=${encodeURIComponent(movieData.Title)}`, 10000).catch(()=>null);
+                            if (tmdbData) {
                                 if (tmdbData.results && tmdbData.results.length > 0) {
                                     const movie = tmdbData.results[0];
                                     if (movie.backdrop_path) {
@@ -529,43 +532,15 @@ async function fetchIMDBData(torrentName) { const debugLevel = process.env.DEBUG
     // Try TV series first if likely series
     if (isLikelySeries) {
         try {
-            const tmdbTvUrl = `https://api.themoviedb.org/3/search/tv?api_key=3fd2be6f0c70a2a598f084ddfb75487d&query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ''}`;
-            if (debugLevel) console.log(`🔍 Trying TMDB TV: ${tmdbTvUrl}`);
-            
-            const searchResponse = await fetch(tmdbTvUrl, {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'SeedboxLite/1.0'
-                },
-                signal: AbortSignal.timeout(15000) // 15 second timeout
-            });
-            
-            if (!searchResponse.ok) {
-                throw new Error(`HTTP ${searchResponse.status}: ${searchResponse.statusText}`);
-            }
-            
-            const searchData = await searchResponse.json();
+            const tmdbTvSearchPath = `/3/search/tv?query=${encodeURIComponent(title)}${year ? `&first_air_date_year=${year}` : ''}`;
+            if (debugLevel) console.log(`🔍 Trying TMDB TV: ${tmdbTvSearchPath}`);
+            const searchData = await tmdbFetchJson(tmdbTvSearchPath, 15000);
             
             if (searchData.results && searchData.results.length > 0) {
                 const show = searchData.results[0];
                 
                 // Get detailed info for TV show
-                const detailsUrl = `https://api.themoviedb.org/3/tv/${show.id}?api_key=3fd2be6f0c70a2a598f084ddfb75487d&append_to_response=credits`;
-                const detailsResponse = await fetch(detailsUrl, {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                        'User-Agent': 'SeedboxLite/1.0'
-                    },
-                    signal: AbortSignal.timeout(15000)
-                });
-                
-                if (!detailsResponse.ok) {
-                    throw new Error(`HTTP ${detailsResponse.status}: ${detailsResponse.statusText}`);
-                }
-                
-                const details = await detailsResponse.json();
+                const details = await tmdbFetchJson(`/3/tv/${show.id}?append_to_response=credits`, 15000);
                 
                 if (debugLevel) console.log(`✅ Found TMDB TV data: ${details.name} (${details.first_air_date?.substring(0, 4)})`);
                 
@@ -598,43 +573,15 @@ async function fetchIMDBData(torrentName) { const debugLevel = process.env.DEBUG
     
     // Try TMDB movies as final fallback
     try {
-        const tmdbSearchUrl = `https://api.themoviedb.org/3/search/movie?api_key=3fd2be6f0c70a2a598f084ddfb75487d&query=${encodeURIComponent(title)}${year ? `&year=${year}` : ''}`;
-        if (debugLevel) console.log(`🔍 Trying TMDB Movies: ${tmdbSearchUrl}`);
-        
-        const searchResponse = await fetch(tmdbSearchUrl, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'User-Agent': 'SeedboxLite/1.0'
-            },
-            signal: AbortSignal.timeout(15000)
-        });
-        
-        if (!searchResponse.ok) {
-            throw new Error(`HTTP ${searchResponse.status}: ${searchResponse.statusText}`);
-        }
-        
-        const searchData = await searchResponse.json();
+        const tmdbMovieSearchPath = `/3/search/movie?query=${encodeURIComponent(title)}${year ? `&year=${year}` : ''}`;
+        if (debugLevel) console.log(`🔍 Trying TMDB Movies: ${tmdbMovieSearchPath}`);
+        const searchData = await tmdbFetchJson(tmdbMovieSearchPath, 15000);
         
         if (searchData.results && searchData.results.length > 0) {
             const movie = searchData.results[0];
             
             // Get detailed info
-            const detailsUrl = `https://api.themoviedb.org/3/movie/${movie.id}?api_key=3fd2be6f0c70a2a598f084ddfb75487d&append_to_response=credits`;
-            const detailsResponse = await fetch(detailsUrl, {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json',
-                    'User-Agent': 'SeedboxLite/1.0'
-                },
-                signal: AbortSignal.timeout(15000)
-            });
-            
-            if (!detailsResponse.ok) {
-                throw new Error(`HTTP ${detailsResponse.status}: ${detailsResponse.statusText}`);
-            }
-            
-            const details = await detailsResponse.json();
+            const details = await tmdbFetchJson(`/3/movie/${movie.id}?append_to_response=credits`, 15000);
             
             if (debugLevel) console.log(`✅ Found TMDB Movie data: ${details.title} (${details.release_date?.substring(0, 4)})`);
             
@@ -1638,20 +1585,20 @@ app.get('/api/torrents', (req, res) => {
   }
 });
 
-// UNIVERSAL GET TORRENT DETAILS - Optimized for performance
+// UNIVERSAL GET TORRENT DETAILS - Optimized for performance + auto-load for RSS packs
 app.get('/api/torrents/:identifier', async (req, res) => {
   const identifier = req.params.identifier;
   
-  // Add a timeout to prevent hanging requests
+  // Add a timeout to prevent hanging requests (increased to 18s for auto-load metadata)
   const requestTimeout = setTimeout(() => {
     console.log(`⏱️ Request timed out for torrent details: ${identifier}`);
     if (!res.headersSent) {
       res.status(503).json({ 
         error: 'Request timeout', 
-        message: 'Torrent details request timed out, server is busy'
+        message: 'Torrent details request timed out, server is busy (metadata from peers can be slow)'
       });
     }
-  }, 5000); // 5 second timeout
+  }, 60000);
   
   try {
     // Check cache first to avoid repeated lookups
@@ -1692,7 +1639,7 @@ app.get('/api/torrents/:identifier', async (req, res) => {
           if (loaded) {
             const waitMeta = new Promise((resolve) => {
               if (loaded.ready) return resolve(loaded);
-              const tm = setTimeout(() => resolve(loaded), 12000);
+              const tm = setTimeout(() => resolve(loaded), 25000);
               loaded.once('ready', () => { clearTimeout(tm); resolve(loaded); });
               loaded.once('metadata', () => { /* metadata received, still wait for ready */ });
             });
@@ -1762,25 +1709,28 @@ app.get('/api/torrents/:identifier', async (req, res) => {
   } catch (error) {
     clearTimeout(requestTimeout);
     console.error(`❌ Universal get failed:`, error.message);
-    res.status(500).json({ error: 'Failed to get torrent details: ' + error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to get torrent details: ' + error.message });
+    }
+  }
   }
 });
 
-// UNIVERSAL FILES ENDPOINT - Optimized with caching and timeout
+// UNIVERSAL FILES ENDPOINT - Optimized with caching and timeout + auto-load
 app.get('/api/torrents/:identifier/files', async (req, res) => {
   const identifier = req.params.identifier;
   const debugLevel = process.env.DEBUG === 'true';
   
-  // Add a timeout to prevent hanging requests
+  // Increased timeout for auto-load metadata
   const requestTimeout = setTimeout(() => {
     console.log(`⏱️ Files request timed out for: ${identifier}`);
     if (!res.headersSent) {
       res.status(503).json({ 
         error: 'Request timeout', 
-        message: 'Files request timed out, try again later'
+        message: 'Files request timed out, try again later (metadata from peers can be slow)'
       });
     }
-  }, 5000); // 5 second timeout
+  }, 60000);
   
   try {
     // Check cache first
@@ -1813,7 +1763,7 @@ app.get('/api/torrents/:identifier/files', async (req, res) => {
           if (loaded) {
             const waitMeta = new Promise((resolve) => {
               if (loaded.ready) return resolve(loaded);
-              const tm = setTimeout(() => resolve(loaded), 12000);
+              const tm = setTimeout(() => resolve(loaded), 25000);
               loaded.once('ready', () => { clearTimeout(tm); resolve(loaded); });
             });
             torrent = await waitMeta;
@@ -1865,7 +1815,10 @@ app.get('/api/torrents/:identifier/files', async (req, res) => {
   } catch (error) {
     clearTimeout(requestTimeout);
     console.error(`❌ Universal files failed:`, error.message);
-    res.status(500).json({ error: 'Failed to get torrent files: ' + error.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to get torrent files: ' + error.message });
+    }
+  }
   }
 });
 

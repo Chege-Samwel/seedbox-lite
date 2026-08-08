@@ -25,7 +25,7 @@ const isIos = /iPad|iPhone|iPod/.test(navigator.userAgent);
 const WARM_POLL_MS = 1500;
 const WARM_POLL_STALLED_MS = 4000; // dead swarm → poll gently (and cooler)
 const WARM_GIVE_UP_MS = 150000; // 2.5 min of polling before offering manual retry
-const RECONNECT_MAX = 8; // consecutive auto-reconnects before falling back to the warmup gate
+const RECONNECT_MAX = 12; // consecutive auto-reconnects (increased for slow swarms) before falling back to the warmup gate
 const STALL_WATCHDOG_MS = 15000; // mid-play starve this long ⇒ reattach at playhead
 const EARLY_PLAY_MIN_BYTES = 2 * 1024 * 1024; // contiguous bytes before "Play now" unlocks
 
@@ -249,7 +249,7 @@ export default function PlayerPage() {
     // If this attach never produced playback, the data plane (swarm), not
     // the socket, is the problem — don't burn all attempts on blind
     // reattaches; go back through the warmup gate instead.
-    const cap = playedAnyRef.current ? RECONNECT_MAX : 3;
+    const cap = playedAnyRef.current ? RECONNECT_MAX : 6;
     if (n > cap) {
       reconnects.current = 0;
       setConnNote(null);
@@ -665,16 +665,22 @@ export default function PlayerPage() {
     const now = performance.now();
     const wasHidden = !uiVisibleRef.current;
     uiVisibleRef.current = true;
-    if (wasHidden || now - lastUiPoke.current > 400) {
+    if (wasHidden || now - lastUiPoke.current > 200) {
       lastUiPoke.current = now;
       setUiVisible(true);
     }
     if (hideTimer.current) clearTimeout(hideTimer.current);
+    // Keep controls visible longer (4.5s) and don't hide if menus open or dragging
     hideTimer.current = setTimeout(() => {
+      if (dragging.current || subMenu || tcMenu) {
+        // Reschedule if menus open
+        pokeUi();
+        return;
+      }
       uiVisibleRef.current = false;
-      if (videoRef.current && !videoRef.current.paused && !dragging.current) setUiVisible(false);
-    }, 2800);
-  }, []);
+      if (videoRef.current && !videoRef.current.paused) setUiVisible(false);
+    }, 4500);
+  }, [subMenu, tcMenu]);
 
   const uiVisibleRef = useRef(uiVisible);
   useEffect(() => { uiVisibleRef.current = uiVisible; }, [uiVisible]);
@@ -1148,9 +1154,10 @@ export default function PlayerPage() {
               ref={scrubRef}
               className="scrubber"
               onPointerDown={onScrubDown}
-              onPointerMove={onScrubMove}
+              onPointerMove={(e)=>{onScrubMove(e); pokeUi();}}
               onPointerLeave={() => !dragging.current && setHoverScrub(null)}
               onMouseEnter={pokeUi}
+              onMouseMove={pokeUi}
             >
               <div className="scrub-track">
                 <div className="scrub-buffered" style={{ width: `${bufferedFrac * 100}%` }} />
@@ -1195,7 +1202,7 @@ export default function PlayerPage() {
                   title="Quality"
                 >
                   <Settings />
-                  <span className="q-chip">{transcodeQ || (qualityPref === 'source' ? 'HD' : 'Auto')}</span>
+                  <span className="q-chip">{transcodeQ ? transcodeQ : 'Original'}</span>
                 </button>
               )}
               <button className={`icon-btn ctrl ${subMenu ? 'on' : ''}`} onClick={() => { setSubMenu((s) => !s); setTcMenu(false); pokeUi(); }} title="Captions">
