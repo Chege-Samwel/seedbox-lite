@@ -304,7 +304,12 @@ module.exports = function mount(app) {
         if (v) res.set(h, v);
       }
       if (!upstream.headers.get('content-type')) res.set('Content-Type', 'video/mp4');
-      res.set('Access-Control-Allow-Origin', '*');
+      const arcOrigin = req.headers.origin || '*';
+      res.set('Access-Control-Allow-Origin', arcOrigin);
+      res.set('Access-Control-Allow-Headers', 'Range, Content-Type, Authorization, ngrok-skip-browser-warning');
+      res.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
+      res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.set('Vary', 'Origin');
       res.set('Cache-Control', 'private, max-age=3600');
       await pipeline(Readable.fromWeb(upstream.body), res);
     } catch (err) {

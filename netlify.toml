@@ -20,3 +20,17 @@
 [build.environment]
   # Fail loudly instead of baking a template/empty value into the bundle.
   NODE_VERSION = "22"
+
+# Redirects: ensure /api/* does NOT fallback to index.html (which would be
+# parsed as JSON and cause confusing 200-HTML errors). Let it 404 so the
+# client can detect a missing VITE_API_BASE_URL and prompt for override.
+[[redirects]]
+  from = "/api/*"
+  to = "/api/:splat"
+  status = 404
+  force = false
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

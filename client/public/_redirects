@@ -1,6 +1,10 @@
 # Heiken — Netlify SPA fallback.
 # React Router owns the routes (/login, /library, /watch/..., etc.). On a
 # static host every unknown path must serve the app shell (index.html), or
-# reloading/deep-linking shows Netlify's "Page not found". API paths are
-# NOT rewritten — the engine lives elsewhere (VITE_API_BASE_URL).
+# reloading/deep-linking shows Netlify's "Page not found".
+# API paths are NOT rewritten — the engine lives elsewhere (VITE_API_BASE_URL).
+# Explicit 404 for /api/* on Netlify so the client can detect that the baked
+# base is wrong and prompt the user to set the server override, instead of
+# serving index.html (200) which would be parsed as JSON and confuse errors.
+/api/* /api/:splat 404
 /* /index.html 200

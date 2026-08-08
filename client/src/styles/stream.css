@@ -176,11 +176,23 @@ button { font-family: inherit; }
 .row-head { display: flex; align-items: baseline; gap: 12px; padding: 0 2px; margin-bottom: 12px; }
 .row-title { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
 .row-hint { color: var(--text-faint); font-size: 12px; font-weight: 600; }
+.row-wrap { position: relative; }
 .row-scroller {
   display: flex; gap: 12px; overflow-x: auto; padding: 2px 2px 14px;
   scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch; scrollbar-width: none;
 }
 .row-scroller::-webkit-scrollbar { display: none; }
+.row-arrow {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(15, 20, 30, 0.92); border: 1px solid #2a3242; color: var(--text);
+  display: grid; place-items: center; cursor: pointer; z-index: 2;
+  box-shadow: var(--shadow); transition: 0.18s; backdrop-filter: blur(8px);
+}
+.row-arrow:hover { background: var(--accent); color: #052012; border-color: var(--accent); transform: translateY(-50%) scale(1.08); }
+.row-arrow.left { left: 6px; }
+.row-arrow.right { right: 6px; }
+@media (max-width: 900px) { .row-arrow { display: none; } }
 
 .card { scroll-snap-align: start; flex: 0 0 auto; width: 138px; cursor: pointer; }
 @media (min-width: 700px) { .card { width: 158px; } }

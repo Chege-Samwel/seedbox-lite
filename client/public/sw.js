@@ -29,11 +29,21 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-  // Never intercept API, stream, subtitle or image requests — always live.
-  if (req.method !== 'GET') return;
   const url = new URL(req.url);
+
+  // Never intercept API, stream, subtitle, or range/media requests — always live direct to server.
+  // These must bypass Netlify and go straight to the engine (apiBase).
+  if (req.method !== 'GET') return;
   if (url.pathname.startsWith('/api/')) return;
-  if (/\.(mp4|m4v|webm|mkv|ts|srt|vtt)$/i.test(url.pathname)) return;
+  if (url.searchParams.has('token') && url.pathname.includes('/files/')) return; // torrent stream URLs carry token
+  if (url.searchParams.has('ngrok-skip-browser-warning')) {
+    // Still let API through, but for media we already returned above via /api/ check.
+    // For navigation we continue.
+    if (url.pathname.startsWith('/api/')) return;
+  }
+  if (/\.(mp4|m4v|webm|mkv|ts|srt|vtt|mp3|aac)$/i.test(url.pathname)) return;
+  // Don't cache Range requests (video scrubbing)
+  if (req.headers.has('Range')) return;
 
   event.respondWith(
     fetch(req)
@@ -41,12 +51,32 @@ self.addEventListener('fetch', (event) => {
         // Cache successful navigations/app-shell responses for offline fallback
         if (res.ok && (req.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html')) {
           const clone = res.clone();
-          caches.open('heiken-shell-v1').then((c) => c.put(url.pathname, clone)).catch(() => {});
+          caches.open('heiken-shell-v1').then((c) => c.put('/index.html', clone)).catch(() => {});
         }
         return res;
       })
-      .catch(() =>
-        caches.match(req).then((hit) => hit || (req.mode === 'navigate' ? caches.match('/index.html') : Response.error()))
-      )
+      .catch(async () => {
+        // For navigation (page reload, deep link), always return the app shell
+        // instead of Response.error() which causes "FetchEvent resulted in network error".
+        if (req.mode === 'navigate') {
+          const cached = await caches.match('/index.html');
+          if (cached) return cached;
+          // As last resort, try network again for index.html
+          try {
+            const shell = await fetch('/index.html');
+            return shell;
+          } catch {
+            // Return a minimal offline page rather than error response
+            return new Response('<html><body style="background:#0b0d12;color:#f2f4f8;font-family:sans-serif;display:grid;place-items:center;height:100vh"><div><h2>Offline</h2><p>Engine unreachable. Check server address in login screen.</p></div></body></html>', {
+              headers: { 'Content-Type': 'text/html' },
+              status: 200
+            });
+          }
+        }
+        const hit = await caches.match(req);
+        if (hit) return hit;
+        // For non-navigate, just fail silently rather than Response.error() which triggers ORB-style logs
+        return fetch(req).catch(() => new Response('', { status: 504, statusText: 'Offline' }));
+      })
   );
 });

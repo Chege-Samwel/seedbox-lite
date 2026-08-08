@@ -7,7 +7,7 @@ import {
 import {
   getArchiveItem, getSubtitleProxyUrl, getArchiveStreamProxyUrl, getTorrentStreamUrl, getTorrentDetails,
   getTorrentSubtitleUrl, getHistoryEntry, saveHistory, getLibrary, sendStreamHeartbeat,
-  startWarmup, getTranscodeStatus, getTranscodeUrl,
+  startWarmup, getTranscodeStatus, getTranscodeUrl, getDirectApiBase, requiresServerOverride,
 } from '../services/api';
 import { formatTime, formatBytes, formatSpeed } from '../utils/format';
 import { useToast } from '../hooks/useToast';
@@ -298,16 +298,27 @@ export default function PlayerPage() {
         }
         setWarmBoth(st);
         if (st.state === 'ready') {
-          // The user already started playback early (Play now button) — the
-          // stream is live and the governor owns the window, so don't
-          // re-attach and restart the <video>; just keep status fresh.
           if (earlyPlayRef.current && phaseRef.current !== 'warming') {
             return;
           }
-          resumeTarget.current = startPos || 0; // applied on first canplay
+          resumeTarget.current = startPos || 0;
           playableRef.current = st.containerPlayable !== false;
-          playedAnyRef.current = false; // this attach is unproven until it plays
+          playedAnyRef.current = false;
           const { mode, q } = resolveMode(st.containerPlayable !== false);
+          // If container is not browser-playable (MKV/HEVC) and no transcode, don't try to play raw — show guidance
+          if (st.containerPlayable === false && mode !== 'transcode') {
+            setPhase('ready');
+            setWarmError(
+              `This file is ${st.fileName?.split('.').pop()?.toUpperCase() || 'MKV'} — browsers can't decode it directly. ` +
+              `Enable transcoding on the server (install ffmpeg and set DISABLE_TRANSCODE=false, or run without LITE_MODE) to watch it, or download the file.`
+            );
+            return;
+          }
+          if (!getDirectApiBase() && requiresServerOverride()) {
+            setPhase('ready');
+            setWarmError('Server address not set — you are on Netlify without a backend URL. Open the login screen, set your engine URL (ngrok/Cloudflare Tunnel), then return here.');
+            return;
+          }
           setPhase('ready');
           if (mode === 'transcode') {
             setTranscodeBoth(q);
@@ -317,7 +328,7 @@ export default function PlayerPage() {
             setInfo((i) => ({ ...i, src: getTorrentStreamUrl(identifier, fileIdxRef.current), fileIndex: fileIdxRef.current }));
             setSrcKey((k) => k + 1);
           }
-          return; // video 'canplay' event calls applyReady
+          return;
         }
         if (Date.now() - warmStartedAt.current > WARM_GIVE_UP_MS || st?.poisoned) {
           setWarmError(st?.poisoned
@@ -344,12 +355,17 @@ export default function PlayerPage() {
   const playEarly = useCallback(() => {
     if (type !== 'torrent') return;
     const st = warmRef.current || {};
-    if (st.poisoned || st.containerPlayable === false || (st.bufferedFromPos || 0) < EARLY_PLAY_MIN_BYTES) return;
+    if (st.poisoned || (st.bufferedFromPos || 0) < EARLY_PLAY_MIN_BYTES) return;
+    if (st.containerPlayable === false && !tcAvailRef.current) return; // let gate show transcode warning
+    if (!getDirectApiBase() && requiresServerOverride()) {
+      setWarmError('Server address not set — set your engine URL in login screen to stream directly.');
+      return;
+    }
     earlyPlayRef.current = true;
     const startPos = warmStartPosRef.current;
     resumeTarget.current = startPos;
     playableRef.current = true;
-    playedAnyRef.current = false; // this attach is unproven until it plays
+    playedAnyRef.current = false;
     const { mode, q } = resolveMode(true);
     setPhase('ready');
     if (mode === 'transcode') {

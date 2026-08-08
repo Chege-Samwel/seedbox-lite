@@ -52,9 +52,44 @@ export function MediaCard({ title, subtitle, poster, wide, badge, progress, onCl
   );
 }
 
-// ---------- Horizontal row ----------
+// ---------- Horizontal row with desktop scroll buttons ----------
 export function Row({ title, hint, children }) {
   const items = React.Children.toArray(children).filter(Boolean);
+  const scrollerRef = React.useRef(null);
+  const [canLeft, setCanLeft] = React.useState(false);
+  const [canRight, setCanRight] = React.useState(false);
+
+  const updateArrows = React.useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const { scrollLeft, scrollWidth, clientWidth } = el;
+    setCanLeft(scrollLeft > 8);
+    setCanRight(scrollLeft + clientWidth < scrollWidth - 8);
+  }, []);
+
+  React.useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    updateArrows();
+    el.addEventListener('scroll', updateArrows, { passive: true });
+    window.addEventListener('resize', updateArrows);
+    // Observe children changes (loading)
+    const ro = new ResizeObserver(updateArrows);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener('scroll', updateArrows);
+      window.removeEventListener('resize', updateArrows);
+      ro.disconnect();
+    };
+  }, [items.length, updateArrows]);
+
+  const scrollBy = (dir) => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const amount = Math.round(el.clientWidth * 0.8) * dir;
+    el.scrollBy({ left: amount, behavior: 'smooth' });
+  };
+
   if (!items.length) return null;
   return (
     <section className="row">
@@ -62,7 +97,19 @@ export function Row({ title, hint, children }) {
         <h2 className="row-title">{title}</h2>
         {hint && <span className="row-hint">{hint}</span>}
       </div>
-      <div className="row-scroller">{items}</div>
+      <div className="row-wrap">
+        {canLeft && (
+          <button className="row-arrow left" aria-label="Scroll left" onClick={() => scrollBy(-1)}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
+          </button>
+        )}
+        <div className="row-scroller" ref={scrollerRef}>{items}</div>
+        {canRight && (
+          <button className="row-arrow right" aria-label="Scroll right" onClick={() => scrollBy(1)}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6" /></svg>
+          </button>
+        )}
+      </div>
     </section>
   );
 }

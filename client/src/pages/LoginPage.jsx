@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Leaf, Server, X } from 'lucide-react';
+import { Leaf, Server, X, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { apiBase, setApiBaseOverride } from '../services/api';
+import { apiBase, setApiBaseOverride, requiresServerOverride, isNetlify } from '../services/api';
 
 export default function LoginPage() {
   const { login, authError, setAuthError } = useAuth();
@@ -54,6 +54,9 @@ export default function LoginPage() {
     setProbe(null); // the sb_api_base_changed listener re-probes immediately
   };
 
+  const needOverride = requiresServerOverride() && !savedAddr;
+  const onNetlify = isNetlify();
+
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={submit}>
@@ -64,9 +67,18 @@ export default function LoginPage() {
         <h1>Enter your ticket</h1>
         <p>Access is by invitation only. Enter the login ticket code you received from the administrator.</p>
         {authError && <div className="error-banner">{authError}</div>}
+        {onNetlify && needOverride && (
+          <div className="error-banner" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 800 }}><AlertTriangle size={16} /> Server address required</span>
+            <span style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+              You are on Netlify (static UI). Video/data <strong>never</strong> goes through Netlify — it streams directly from your Heiken engine.
+              Paste your engine's public URL below (ngrok / Cloudflare Tunnel / VPS). Example: <code>https://xxxx.ngrok-free.app</code>
+            </span>
+          </div>
+        )}
         {probe && (
           <p style={{ margin: '8px 0 0', fontSize: 11.5, textAlign: 'center', color: probe.ok ? '#4caf86' : '#e07a5f' }}>
-            API @ {probe.host} — {probe.ok ? 'reachable ✓' : 'unreachable ✗ (server down, or a wrong baked VITE_API_BASE_URL)'}
+            API @ {probe.host} — {probe.ok ? 'reachable ✓' : 'unreachable ✗ (server down, or set server address below)'}
           </p>
         )}
         <div className="field">
@@ -88,13 +100,12 @@ export default function LoginPage() {
         <p style={{ marginTop: 18, marginBottom: 0, fontSize: 12, textAlign: 'center' }}>
           Tickets can be discontinued or renewed by the administrator at any time.
         </p>
-        <details style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim, #9aa)' }}>
-          <summary style={{ cursor: 'pointer' }}><Server size={12} style={{ verticalAlign: -2 }} /> Server address (split hosting)</summary>
+        <details open={needOverride} style={{ marginTop: 12, fontSize: 12, color: 'var(--text-dim, #9aa)' }}>
+          <summary style={{ cursor: 'pointer' }}><Server size={12} style={{ verticalAlign: -2 }} /> Server address (split hosting) — data goes direct to server, never through Netlify</summary>
           <div style={{ margin: '8px 0 0', display: 'flex', gap: 6, flexDirection: 'column' }}>
             <p style={{ margin: 0, lineHeight: 1.5 }}>
-              The static UI (Netlify) needs to know where your Heiken engine runs. If
-              you use a Cloudflare <em>quick</em> tunnel, its URL changes every run —
-              paste the current one here once per device (no rebuild needed):
+              The static UI (Netlify) is just a shell. All API, torrent metadata, and video bytes stream <strong>directly</strong> from your Heiken engine to this browser — never proxied through Netlify.
+              Paste your engine's public URL here once per device (no rebuild needed). If you use a Cloudflare <em>quick</em> tunnel, its URL changes every run:
             </p>
             <input
               className="input"

@@ -13,14 +13,46 @@ import { fetchWithTimeout } from '../utils/fetchWithTimeout';
 //  those mean the server answered), we retry the same request against the
 //  origin that served the UI and, if that works, learn the override so
 //  <video>/<track> URL builders follow too.
+//  3. For Netlify/static hosts, data MUST go directly to the engine (never
+//  through Netlify). So we always use an absolute apiBase for media URLs
+//  when an override or baked base exists. If neither exists and we're on
+//  Netlify, playback cannot work and we surface a clear error.
 const BAKED_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const BAKED_IS_TEMPLATE = !BAKED_BASE || BAKED_BASE.includes('<') || BAKED_BASE.includes('seedbox-api.');
 const OVERRIDE_KEY = 'sb_api_base_override';
 
+const isLocalHost = () => {
+  const h = window.location?.hostname || '';
+  return h === 'localhost' || h === '127.0.0.1' || h.startsWith('192.168.') || h.startsWith('10.') || h.endsWith('.local');
+};
+
+export const isNetlify = () => {
+  const h = window.location?.hostname || '';
+  return h.includes('netlify.app') || h.includes('netlify') || (typeof window !== 'undefined' && window.location.origin.includes('heikenapp'));
+};
+
 export const apiBase = () => {
   const saved = localStorage.getItem(OVERRIDE_KEY);
-  if (saved !== null) return saved;
-  return BAKED_IS_TEMPLATE ? '' : BAKED_BASE;
+  if (saved !== null && saved !== '') return saved;
+  if (!BAKED_IS_TEMPLATE) return BAKED_BASE;
+  // Same-origin fallback is only valid for local dev / npm start all-in-one.
+  // On Netlify, same-origin has no /api, so we return '' and let the caller
+  // detect that an override is required (UI prompts user).
+  return '';
+};
+
+export const requiresServerOverride = () => {
+  return apiBase() === '' && !isLocalHost();
+};
+
+export const getDirectApiBase = () => {
+  // For media (video, transcode, subtitles) we MUST use absolute backend URL,
+  // never Netlify. If no base is configured and we're on Netlify, return null
+  // so the player can show "Set server address" instead of trying Netlify.
+  const base = apiBase();
+  if (base) return base;
+  if (isLocalHost()) return window.location.origin; // same-origin dev is direct
+  return null; // Netlify without override → cannot stream
 };
 /** Point the whole app at a different Heiken server (split hosting with a
  *  changing tunnel URL). Empty string clears the override. */
@@ -172,12 +204,17 @@ export const getRssFeeds = () => apiFetch('/api/rss/feeds', { timeoutMs: 12000, 
 export const searchArchive = (q, page = 1) =>
   apiFetch(`/api/browse/search?q=${encodeURIComponent(q)}&page=${page}`, { timeoutMs: 25000, retries: 1 });
 export const getArchiveItem = (id) => apiFetch(`/api/browse/item/${encodeURIComponent(id)}`, { timeoutMs: 25000, retries: 1 });
-export const getSubtitleProxyUrl = (identifier, file) =>
-  `${apiBase()}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}&ngrok-skip-browser-warning=1`;
+export const getSubtitleProxyUrl = (identifier, file) => {
+  const b = getDirectApiBase() || apiBase() || '';
+  return `${b}/api/browse/subtitle?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}&ngrok-skip-browser-warning=1`;
+};
 // Range-capable server proxy for archive.org video — used as the automatic
 // fallback when an IA edge node CORS-blocks direct media playback.
-export const getArchiveStreamProxyUrl = (identifier, file) =>
-  `${apiBase()}/api/browse/stream?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}&token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+// Always direct to backend, never through Netlify.
+export const getArchiveStreamProxyUrl = (identifier, file) => {
+  const b = getDirectApiBase() || apiBase() || '';
+  return `${b}/api/browse/stream?item=${encodeURIComponent(identifier)}&file=${encodeURIComponent(file)}&token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+};
 
 // ---------- Metadata (picture library / TV structure) ----------
 export const searchMetadata = (q, type = 'any') =>
@@ -232,18 +269,27 @@ export const getWarmupStatus = (infoHash, { fileIdx, positionSecs, durationSecs,
   return apiFetch(`/api/torrents/${infoHash}/warmup${qs ? `?${qs}` : ''}`, { timeoutMs: 12000 });
 };
 
-export const getTorrentStreamUrl = (infoHash, fileIndex) =>
-  `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+export const getTorrentStreamUrl = (infoHash, fileIndex) => {
+  const base = getDirectApiBase() || apiBase();
+  if (!base && requiresServerOverride()) {
+    console.warn('[seedbox] No backend configured — stream URL will fail. Set server address in login screen.');
+  }
+  const b = base || apiBase() || '';
+  return `${b}/api/torrents/${infoHash}/files/${fileIndex}/stream?token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+};
 
 // ---------- Transcode (quality variants from one big source) ----------
 export const getTranscodeStatus = () => apiFetch('/api/transcode/status', { timeoutMs: 8000 });
 export const getTranscodeUrl = (infoHash, fileIndex, quality, startSecs = 0) => {
   const q = new URLSearchParams({ quality, token: getToken() || '', 'ngrok-skip-browser-warning': '1' });
   if (startSecs > 0.5) q.set('t', String(Math.max(0, startSecs).toFixed(1)));
-  return `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/transcode?${q.toString()}`;
+  const b = getDirectApiBase() || apiBase() || '';
+  return `${b}/api/torrents/${infoHash}/files/${fileIndex}/transcode?${q.toString()}`;
 };
-export const getTorrentSubtitleUrl = (infoHash, fileIndex) =>
-  `${apiBase()}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+export const getTorrentSubtitleUrl = (infoHash, fileIndex) => {
+  const b = getDirectApiBase() || apiBase() || '';
+  return `${b}/api/torrents/${infoHash}/files/${fileIndex}/subtitle?token=${encodeURIComponent(getToken() || '')}&ngrok-skip-browser-warning=1`;
+};
 
 // ---------- Player heartbeat (drives the -5m/+5m buffer window) ----------
 export const sendStreamHeartbeat = (infoHash, fileIdx, position, duration) =>

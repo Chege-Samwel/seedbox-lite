@@ -34,9 +34,23 @@ export default function FeedDetailsPage() {
       const data = await getTorrentDetails(item.infoHash);
       setDetails(data);
     } catch (err) {
-      // A feed item remains useful even when metadata peers are slow. The
-      // first-file card still lets the user queue it in the pipeline.
-      toast(err.message || 'File list is not available yet', 'error');
+      // Auto-load path: server will now auto-load the magnet from its RSS cache
+      // and try to fetch metadata from peers. Retry a couple times before giving up.
+      if (err.status === 404) {
+        toast('Fetching file list from peers — will auto-retry (needs metadata)…');
+        // Trigger background load via library add? No, just poll details.
+        for (let i = 0; i < 3; i++) {
+          await new Promise((r) => setTimeout(r, 4000));
+          try {
+            const data2 = await getTorrentDetails(item.infoHash);
+            setDetails(data2);
+            toast('File list loaded');
+            setLoadingFiles(false);
+            return;
+          } catch {}
+        }
+      }
+      toast(err.message || 'File list is not available yet — peers may be slow. Try Play to warm up.', 'error');
     }
     setLoadingFiles(false);
   };

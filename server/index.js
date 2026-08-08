@@ -414,32 +414,33 @@ async function fetchIMDBData(torrentName) { const debugLevel = process.env.DEBUG
     const omdbKey = process.env.OMDB_API_KEY || 'trilogy';
     
     // Multiple search strategies with OMDb for both movies and series
+    // NOTE: OMDb free key 'trilogy' often 401s; we limit attempts and skip verbose logs
+    // to avoid the SLOW API 7s spam seen in production (7165ms for /api/browse/home).
     const omdbStrategies = [];
-    
+
     if (isLikelySeries) {
-        // For series, try series type first
         omdbStrategies.push(
-            year ? `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}&y=${year}&type=series` : null,
-            `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}&type=series`,
-            `http://www.omdbapi.com/?apikey=${omdbKey}&s=${encodeURIComponent(title)}&type=series`
+            `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}&type=series`
         );
     }
-    
-    // Add movie searches (for both movies and as fallback for series)
     omdbStrategies.push(
-        year ? `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}&y=${year}` : null,
-        `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}`,
-        `http://www.omdbapi.com/?apikey=${omdbKey}&s=${encodeURIComponent(title)}&type=movie`,
-        `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent('The ' + title)}`
+        `http://www.omdbapi.com/?apikey=${omdbKey}&t=${encodeURIComponent(title)}`
     );
-    
-    const filteredStrategies = omdbStrategies.filter(Boolean);
-    
-    // Try OMDb first
+
+    const filteredStrategies = omdbStrategies.filter(Boolean).slice(0, 2);
+
+    // Try OMDb first (quick fail on 401)
+    let omdbAuthFailed = false;
     for (const url of filteredStrategies) {
+        if (omdbAuthFailed) break;
         try {
             if (debugLevel) console.log(`🔍 Trying OMDb: ${url}`);
-            const response = await fetch(url);
+            const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+            if (response.status === 401) {
+                omdbAuthFailed = true;
+                if (debugLevel) console.log(`❌ OMDb 401 — key invalid or quota exceeded, skipping OMDb`);
+                break;
+            }
             const data = await response.json();
             
             if (data && data.Response === 'True') {
@@ -1668,25 +1669,50 @@ app.get('/api/torrents/:identifier', async (req, res) => {
       console.log(`🎯 UNIVERSAL GET: ${identifier}`);
     }
     
-    const torrent = await universalTorrentResolver(identifier);
-    
+    let torrent = await universalTorrentResolver(identifier);
+
+    // Auto-load path for feed/episode inspection: if the torrent is not in engine
+    // but the identifier is a valid infoHash (RSS items, shared links), try to
+    // load its magnet from the RSS catalog or as bare hash with trackers, then
+    // wait briefly for metadata so the file list can be returned.
+    if (!torrent) {
+      const isHashLike = /^[a-fA-F0-9]{40}$/.test(String(identifier)) || /xt=urn:btih:([a-zA-Z0-9]{32,40})/i.test(String(identifier));
+      if (isHashLike) {
+        try {
+          const rss = require('./lib/rssService');
+          let magnet = null;
+          try {
+            const rssItem = await rss.getItem(identifier).catch(() => null);
+            if (rssItem?.magnet) magnet = rssItem.magnet;
+          } catch {}
+          const toLoad = magnet || identifier;
+          console.log(`🔍 Auto-loading torrent for details: ${String(identifier).slice(0,16)}...`);
+          const loaded = await loadTorrentFromId(toLoad).catch(() => null);
+          // If loaded, give it up to 12s for metadata
+          if (loaded) {
+            const waitMeta = new Promise((resolve) => {
+              if (loaded.ready) return resolve(loaded);
+              const tm = setTimeout(() => resolve(loaded), 12000);
+              loaded.once('ready', () => { clearTimeout(tm); resolve(loaded); });
+              loaded.once('metadata', () => { /* metadata received, still wait for ready */ });
+            });
+            torrent = await waitMeta;
+          }
+        } catch (e) {
+          console.warn(`⚠️ Auto-load for details failed: ${e.message}`);
+        }
+      }
+    }
+
     if (!torrent) {
       clearTimeout(requestTimeout);
-      
-      // Don't generate suggestions on every request - expensive operation
-      // Only include up to 5 suggestions to keep response size small
-      const suggestions = Object.values(torrents)
-        .slice(0, 5)
-        .map(t => ({
-          infoHash: t.infoHash,
-          name: t.name
-        }));
-      
-      return res.status(404).json({ 
+      const suggestions = Object.values(torrents).slice(0, 5).map(t => ({ infoHash: t.infoHash, name: t.name }));
+      return res.status(404).json({
         error: 'Torrent not found',
         identifier,
         suggestions,
-        availableTorrents: Object.keys(torrents).length // Just count, don't process
+        availableTorrents: Object.keys(torrents).length,
+        hint: 'If this is an RSS item, the file list needs peers for metadata. Try again shortly or add it to your pipeline.'
       });
     }
 
@@ -1768,12 +1794,37 @@ app.get('/api/torrents/:identifier/files', async (req, res) => {
     }
     
     if (debugLevel) console.log(`📁 UNIVERSAL FILES: ${identifier}`);
-    
-    const torrent = await universalTorrentResolver(identifier);
-    
+
+    let torrent = await universalTorrentResolver(identifier);
+
+    // Auto-load for file-list inspection (RSS season packs)
+    if (!torrent) {
+      const isHashLike = /^[a-fA-F0-9]{40}$/.test(String(identifier)) || /xt=urn:btih:/i.test(String(identifier));
+      if (isHashLike) {
+        try {
+          const rss = require('./lib/rssService');
+          let magnet = null;
+          try {
+            const it = await rss.getItem(identifier).catch(() => null);
+            if (it?.magnet) magnet = it.magnet;
+          } catch {}
+          const toLoad = magnet || identifier;
+          const loaded = await loadTorrentFromId(toLoad).catch(() => null);
+          if (loaded) {
+            const waitMeta = new Promise((resolve) => {
+              if (loaded.ready) return resolve(loaded);
+              const tm = setTimeout(() => resolve(loaded), 12000);
+              loaded.once('ready', () => { clearTimeout(tm); resolve(loaded); });
+            });
+            torrent = await waitMeta;
+          }
+        } catch {}
+      }
+    }
+
     if (!torrent) {
       clearTimeout(requestTimeout);
-      return res.status(404).json({ error: 'Torrent not found' });
+      return res.status(404).json({ error: 'Torrent not found', hint: 'File list needs metadata from peers. The torrent will be auto-loaded; retry in a few seconds.' });
     }
 
     // Handle large torrents more efficiently by paginating results
@@ -2128,6 +2179,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         }
       }
       
+      const streamOrigin = req.headers.origin || '*';
       res.writeHead(206, {
         'Content-Range': `bytes ${start}-${end}/${file.length}`,
         'Accept-Ranges': 'bytes',
@@ -2136,9 +2188,13 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Range, Content-Type',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length',
+        'Access-Control-Allow-Origin': streamOrigin,
+        'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, ngrok-skip-browser-warning',
+        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-Transcode-Quality',
+        'Access-Control-Allow-Credentials': streamOrigin !== '*' ? 'true' : undefined,
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+        'Vary': 'Origin',
         'Connection': 'keep-alive'
       });
       
@@ -2176,6 +2232,7 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
       
     } else {
       // Handle full file request (less common)
+      const fullOrigin = req.headers.origin || '*';
       res.writeHead(200, {
         'Content-Length': file.length,
         'Content-Type': contentType,
@@ -2183,9 +2240,13 @@ app.get('/api/torrents/:identifier/files/:fileIdx/stream', async (req, res) => {
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Range, Content-Type',
-        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length'
+        'Access-Control-Allow-Origin': fullOrigin,
+        'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, ngrok-skip-browser-warning',
+        'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-Transcode-Quality',
+        'Access-Control-Allow-Credentials': fullOrigin !== '*' ? 'true' : undefined,
+        'Cross-Origin-Resource-Policy': 'cross-origin',
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+        'Vary': 'Origin'
       });
       
       try {

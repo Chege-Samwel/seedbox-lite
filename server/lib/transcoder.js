@@ -166,7 +166,12 @@ function transcodeInto({ srcUrl, quality, startSecs = 0, token, res, label }) {
   res.writeHead(200, {
     'Content-Type': 'video/mp4',
     'Cache-Control': 'no-cache, no-store',
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': res.req?.headers?.origin || '*',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, Authorization, ngrok-skip-browser-warning',
+    'Access-Control-Expose-Headers': 'Content-Range, Accept-Ranges, Content-Length, X-Transcode-Quality',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Cross-Origin-Embedder-Policy': 'credentialless',
+    'Vary': 'Origin',
     'X-Transcode-Quality': q,
   });
   // Backpressure pacing: pipe() applies flow control, ffmpeg blocks on its
